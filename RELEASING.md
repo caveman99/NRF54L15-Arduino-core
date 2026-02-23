@@ -36,20 +36,29 @@ python3 tools/check_release_reproducible.py
 
 This smoke test validates installation and compilation of packaged examples, including:
 
-- `examples/01.Basics/Blink`
-- `examples/02.Communication/I2CTargetCallbacks`
-- `examples/02.Communication/SerialConfig`
-- `examples/02.Communication/SPILoopback`
-- `examples/03.Board/LowPowerFeatures`
-- `examples/03.Board/HardwareValidationMatrix`
-- `examples/03.Board/CpuFrequencyControl`
-- `examples/03.Board/WatchdogSleepWake`
+- `examples/GPIO/InterruptButton`
+- `examples/Power/battery`
+- `examples/Power/LowPowerFeatures`
+- `examples/Power/LowPowerProfiles`
+- `examples/Power/PeripheralPowerGating`
+- `examples/Power/CpuFrequencyControl`
+- `examples/Power/WatchdogSleepWake`
+- `examples/Power/lowpower`
+- `examples/Radio/AntennaControl`
+- `examples/Radio/RadioProfileInfo`
 - `libraries/Watchdog/examples/FeedWatchdog`
 - `libraries/Bluetooth/examples/BLEScan` (BLE menu profile)
 - `libraries/Bluetooth/examples/BLEScanForEach` (BLE menu profile)
-- `examples/03.Board/BLEScanMonitor` (BLE menu profile)
-- `examples/03.Board/BLE6FeatureProbe` (BLE menu profile)
-- `examples/03.Board/BLE6RangeProbe` (BLE menu profile)
+- `libraries/Bluetooth/examples/BLECentralConnect` (BLE menu profile)
+- `examples/BLE/BLEScanTest` (BLE menu profile)
+- `examples/BLE/BLEAdvertiseTest` (BLE menu profile)
+- `examples/BLE/BLEScanMonitor` (BLE menu profile)
+- `examples/BLE/BLECentralMonitor` (BLE menu profile)
+- `libraries/IEEE802154/examples/IEEE802154Config` (802.15.4 profile)
+- `libraries/IEEE802154/examples/IEEE802154PassiveScan` (802.15.4 profile)
+- `examples/Radio/IEEE802154FeatureProbe` (802.15.4 profile)
+- `examples/Radio/zigbee_scan` (802.15.4 profile)
+- `examples/Radio/zigbee_radio_config` (802.15.4 profile)
 
 The packager excludes generated/heavy tool directories, including:
 

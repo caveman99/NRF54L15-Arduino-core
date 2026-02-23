@@ -24,7 +24,7 @@ Build/runtime basis:
 - ✅ **CMSIS-DAP debug** - Works with built-in debugger on XIAO boards
 - ✅ **Cross-platform uploader** - `Auto` runner selects `pyOCD` then `OpenOCD`
 - ✅ **Board Tools menu** - Upload method, CPU frequency, antenna, radio profile
-- ✅ **Expanded example set** - Includes core examples plus legacy Seeed example folders in Arduino IDE
+- ✅ **Curated board-specific examples** - Arduino IDE menu is focused on XIAO nRF54L15 BLE/radio/power/expansion workflows
 
 ## Supported Boards
 
@@ -230,7 +230,7 @@ The clean core exposes these Arduino IDE options:
 - **Antenna**: `On-board Ceramic`, `External U.FL`
 - **Radio Profile**: `Radio Disabled`, `BLE Only`, `802.15.4 Only`, `BLE + 802.15.4`
 
-For lowest active current, keep **CPU Frequency = 64 MHz** and use `03.Board/LowPowerProfiles`.
+For lowest active current, keep **CPU Frequency = 64 MHz** and use `Power/LowPowerProfiles`.
 
 When **Radio Profile** is `BLE Only`, `802.15.4 Only`, or `BLE + 802.15.4`, the build automatically enforces a 128 MHz radio-safe clock profile.
 
@@ -292,40 +292,32 @@ void loop() {
 
 The core includes several examples:
 
-- **01.Basics/Blink** - Basic LED blinking
-- **01.Basics/AnalogRead** - Analog input with serial output
-- **02.Communication/I2CScanner** - I2C address scanner
-- **02.Communication/I2CRegisterRead** - Repeated-start register read
-- **02.Communication/I2CTargetCallbacks** - I2C target/slave callback demo (`onReceive`/`onRequest`)
-- **02.Communication/SPIDigitalPot** - SPI peripheral example
-- **02.Communication/SPILoopback** - SPI loopback self-test
-- **02.Communication/SPIBurstTransfer** - SPI buffer transfer demo
-- **02.Communication/SerialEcho** - Serial RX/TX test
-- **02.Communication/SerialConfig** - UART framing config example (`SERIAL_8N1`, etc.)
-- **02.Communication/SerialBridge01** - Serial (USB/console) to Serial1 (D6/D7) bridge
-- **02.Digital/LEDDetect** - LED detection test
-- **02.Digital/SimpleBlink** - Blink without Arduino abstractions
+- **BLE/BLEScanTest** - quick BLE scan sanity check
+- **BLE/BLEAdvertiseTest** - quick BLE advertising sanity check
+- **BLE/BLEScanMonitor** - stream all scan hits in each window (`scanForEach`)
+- **BLE/BLECentralMonitor** - board-level BLE central loop for real-device tests
+- **Radio/AntennaControl** - runtime ceramic/U.FL antenna switch
+- **Radio/RadioProfileInfo** - print Tools menu radio/profile/antenna settings
+- **Radio/IEEE802154FeatureProbe** - board-level 802.15.4 probe/scan example
+- **Power/battery** - VBAT_EN + A7 battery monitor sample
+- **Power/LowPowerFeatures** - sleep + wake behavior checks
+- **Power/LowPowerProfiles** - button-switchable low-power duty profiles
+- **Power/PeripheralPowerGating** - manual peripheral suspend/resume shell
+- **Power/WatchdogSleepWake** - watchdog + sleep + reset-cause validation
+- **GPIO/InterruptButton** - interrupt-driven button handling on board pin map
+- **Expansion/oled**, **Expansion/rtc**, **Expansion/buzzer** - XIAO expansion-board focused demos
 - **libraries/Bluetooth/examples/** - BLE API examples for the clean core
 - **libraries/Bluetooth/examples/BLEScanForEach** - callback-based scan stream demo
 - **libraries/Bluetooth/examples/BLECentralConnect** - central connect/disconnect cycle
-- **03.Board/BLEScanMonitor** - stream all scan hits in each window (`scanForEach`)
-- **03.Board/BLECentralMonitor** - board-level BLE central loop for real-device tests
 - **libraries/IEEE802154/examples/** - 802.15.4 config + passive scan examples
-- **03.Board/IEEE802154FeatureProbe** - board-level 802.15.4 probe/scan example
 - **libraries/Watchdog/examples/FeedWatchdog** - simple `Watchdog.begin()/feed()` compatibility check
 - **libraries/XiaoNrf54L15/examples/AntennaSelect** - Runtime antenna switching + radio profile info
-- **03.Board/LowPowerProfiles** - Button-switchable low-power duty profiles
-- **03.Board/PeripheralPowerGating** - Manual peripheral suspend/resume command shell
-- **03.Board/WatchdogSleepWake** - Watchdog + sleep + reset-cause validation
-- **03.Board/CpuFrequencyControl** - CPU frequency monitor/control (Tools + optional runtime set)
-- **03.Board/HardwareValidationMatrix** - single serial-menu validation sketch across ADC/I2C/SPI/UART/watchdog/sleep/BLE/802.15.4
-- **03.Board/BLE6RangeBeacon** - BLE transmitter for range testing
-- **03.Board/BLE6RangeProbe** - RSSI trend probe for practical BLE range checks
+- **Power/CpuFrequencyControl** - CPU frequency monitor/control (Tools + optional runtime set)
 
 ## Memory Usage
 
 Example program storage usage:
-- **Blink**: ~52KB flash, ~19KB RAM
+- **GPIO/InterruptButton**: ~52KB flash, ~19KB RAM
 - **BLE menu-enabled example**: ~180KB flash, ~39KB RAM
 - **Full featured sketches**: varies with selected radio/profile options
 

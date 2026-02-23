@@ -47,6 +47,8 @@ const struct device *resolveConsoleDevice()
     return DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 #elif DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_shell_uart), okay)
     return DEVICE_DT_GET(DT_CHOSEN(zephyr_shell_uart));
+#elif DT_NODE_HAS_STATUS(DT_NODELABEL(uart20), okay)
+    return DEVICE_DT_GET(DT_NODELABEL(uart20));
 #elif DT_NODE_HAS_STATUS(DT_ALIAS(xiao_serial), okay)
     return DEVICE_DT_GET(DT_ALIAS(xiao_serial));
 #else

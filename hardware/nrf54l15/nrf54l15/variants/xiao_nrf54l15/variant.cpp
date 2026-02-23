@@ -21,10 +21,12 @@ namespace {
 
 constexpr gpio_pin_t kRfSwitchPowerPin = 3U;
 constexpr gpio_pin_t kRfSwitchSelectPin = 5U;
+constexpr gpio_pin_t kBatteryEnablePin = 15U;
 constexpr uint8_t kRfSwitchCeramic = 0U;
 constexpr uint8_t kRfSwitchExternal = 1U;
 
 uint8_t g_rf_switch_selection = kRfSwitchCeramic;
+uint8_t g_battery_enable = 0U;
 
 int applyRfSwitchSelection(uint8_t selection)
 {
@@ -59,17 +61,59 @@ int applyRfSwitchSelection(uint8_t selection)
     return 0;
 }
 
+int applyBatteryEnable(uint8_t enabled)
+{
+    const struct device *const gpio1 = DEVICE_DT_GET(DT_NODELABEL(gpio1));
+    if (!device_is_ready(gpio1)) {
+        return -ENODEV;
+    }
+
+    int ret = gpio_pin_configure(gpio1, kBatteryEnablePin, GPIO_OUTPUT);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = gpio_pin_set(gpio1, kBatteryEnablePin, enabled ? 1 : 0);
+    if (ret < 0) {
+        return ret;
+    }
+
+    g_battery_enable = enabled ? 1U : 0U;
+    return 0;
+}
+
 } // namespace
+
+extern "C" uint8_t arduinoXiaoNrf54l15SetAntenna(uint8_t selection)
+{
+    return applyRfSwitchSelection(selection) == 0 ? 1U : 0U;
+}
+
+extern "C" uint8_t arduinoXiaoNrf54l15GetAntenna(void)
+{
+    return g_rf_switch_selection;
+}
+
+extern "C" uint8_t arduinoXiaoNrf54l15SetBatteryEnable(uint8_t enabled)
+{
+    return applyBatteryEnable(enabled) == 0 ? 1U : 0U;
+}
+
+extern "C" uint8_t arduinoXiaoNrf54l15GetBatteryEnable(void)
+{
+    return g_battery_enable;
+}
 
 extern "C" void xiaoNrf54l15SetAntenna(xiao_nrf54l15_antenna_t antenna)
 {
-    (void)applyRfSwitchSelection(antenna == XIAO_NRF54L15_ANTENNA_EXTERNAL ? kRfSwitchExternal : kRfSwitchCeramic);
+    (void)arduinoXiaoNrf54l15SetAntenna(
+        antenna == XIAO_NRF54L15_ANTENNA_EXTERNAL ? kRfSwitchExternal : kRfSwitchCeramic);
 }
 
 extern "C" xiao_nrf54l15_antenna_t xiaoNrf54l15GetAntenna(void)
 {
-    return g_rf_switch_selection == kRfSwitchExternal ? XIAO_NRF54L15_ANTENNA_EXTERNAL
-                                                      : XIAO_NRF54L15_ANTENNA_CERAMIC;
+    return arduinoXiaoNrf54l15GetAntenna() == kRfSwitchExternal ? XIAO_NRF54L15_ANTENNA_EXTERNAL
+                                                                : XIAO_NRF54L15_ANTENNA_CERAMIC;
 }
 
 extern "C" {
@@ -154,9 +198,13 @@ extern const size_t g_pwm_map_size = ARRAY_SIZE(g_pwm_map);
 void initVariant(void)
 {
 #if defined(ARDUINO_XIAO_NRF54L15_EXT_ANTENNA)
-    xiaoNrf54l15SetAntenna(XIAO_NRF54L15_ANTENNA_EXTERNAL);
+    (void)arduinoXiaoNrf54l15SetAntenna(kRfSwitchExternal);
 #else
-    xiaoNrf54l15SetAntenna(XIAO_NRF54L15_ANTENNA_CERAMIC);
+    (void)arduinoXiaoNrf54l15SetAntenna(kRfSwitchCeramic);
+#endif
+
+#if !defined(ARDUINO_XIAO_NRF54L15_DISABLE_VBAT_EN_BOOT)
+    (void)arduinoXiaoNrf54l15SetBatteryEnable(1U);
 #endif
 }
 

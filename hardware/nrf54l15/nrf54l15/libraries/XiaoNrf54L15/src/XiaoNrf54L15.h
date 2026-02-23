@@ -25,9 +25,39 @@ enum XiaoPowerProfile {
 
 class XiaoNrf54L15Class {
 public:
+    enum Antenna : uint8_t {
+        CERAMIC = XIAO_ANTENNA_CERAMIC,
+        EXTERNAL = XIAO_ANTENNA_EXTERNAL,
+    };
+
+    enum RadioProfile : uint8_t {
+        RADIO_BLE_ONLY = 0,
+        RADIO_DUAL = 1,
+        RADIO_802154_ONLY = 2,
+        RADIO_UNKNOWN = 255,
+    };
+
+    // Compatibility API retained for existing sketches.
     void setAntenna(XiaoAntennaMode antenna);
     XiaoAntennaMode antenna() const;
     bool usingExternalAntenna() const;
+
+    // Preferred API used by bundled board-test examples.
+    bool setAntenna(Antenna antenna);
+    Antenna getAntenna() const;
+    bool useCeramicAntenna();
+    bool useExternalAntenna();
+    RadioProfile getRadioProfile() const;
+    int getBtTxPowerDbm() const;
+    bool isExternalAntennaBuild() const;
+
+    // VBAT helpers for XIAO nRF54L15 battery monitor path.
+    bool setBatteryMeasurementEnabled(bool enabled = true) const;
+    bool batteryMeasurementEnabled() const;
+    int readBatteryRaw(uint8_t samples = 1) const;
+    float readBatteryVoltage(float dividerRatio = 2.0f,
+                             float referenceVoltage = 3.3f,
+                             uint8_t samples = 4) const;
 
     const char* radioProfileName() const;
     bool bleEnabled() const;

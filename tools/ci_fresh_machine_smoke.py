@@ -176,23 +176,27 @@ def main() -> int:
         if not installed_core_root.is_dir():
             raise RuntimeError(f"Installed core directory missing: {installed_core_root}")
 
-        basic_example = installed_core_root / "examples" / "01.Basics" / "Blink"
-        i2c_target_example = installed_core_root / "examples" / "02.Communication" / "I2CTargetCallbacks"
-        serial_config_example = installed_core_root / "examples" / "02.Communication" / "SerialConfig"
-        spi_loopback_example = installed_core_root / "examples" / "02.Communication" / "SPILoopback"
-        low_power_example = installed_core_root / "examples" / "03.Board" / "LowPowerFeatures"
-        low_power_profiles_example = installed_core_root / "examples" / "03.Board" / "LowPowerProfiles"
-        peripheral_power_gating_example = (
-            installed_core_root / "examples" / "03.Board" / "PeripheralPowerGating"
-        )
-        cpu_freq_example = installed_core_root / "examples" / "03.Board" / "CpuFrequencyControl"
-        watchdog_example = installed_core_root / "examples" / "03.Board" / "WatchdogSleepWake"
-        matrix_example = installed_core_root / "examples" / "03.Board" / "HardwareValidationMatrix"
+        interrupt_example = installed_core_root / "examples" / "GPIO" / "InterruptButton"
+        battery_example = installed_core_root / "examples" / "Power" / "battery"
+        low_power_example = installed_core_root / "examples" / "Power" / "LowPowerFeatures"
+        low_power_profiles_example = installed_core_root / "examples" / "Power" / "LowPowerProfiles"
+        peripheral_power_gating_example = installed_core_root / "examples" / "Power" / "PeripheralPowerGating"
+        cpu_freq_example = installed_core_root / "examples" / "Power" / "CpuFrequencyControl"
+        watchdog_example = installed_core_root / "examples" / "Power" / "WatchdogSleepWake"
+        lowpower_simple_example = installed_core_root / "examples" / "Power" / "lowpower"
+
+        antenna_example = installed_core_root / "examples" / "Radio" / "AntennaControl"
+        radio_profile_example = installed_core_root / "examples" / "Radio" / "RadioProfileInfo"
+        ieee802154_probe_example = installed_core_root / "examples" / "Radio" / "IEEE802154FeatureProbe"
+        zigbee_scan_example = installed_core_root / "examples" / "Radio" / "zigbee_scan"
+        zigbee_radio_config_example = installed_core_root / "examples" / "Radio" / "zigbee_radio_config"
+
+        ble_scan_test_example = installed_core_root / "examples" / "BLE" / "BLEScanTest"
+        ble_advertise_test_example = installed_core_root / "examples" / "BLE" / "BLEAdvertiseTest"
+        ble_scan_monitor_example = installed_core_root / "examples" / "BLE" / "BLEScanMonitor"
+        ble_central_monitor_example = installed_core_root / "examples" / "BLE" / "BLECentralMonitor"
+
         watchdog_lib_example = installed_core_root / "libraries" / "Watchdog" / "examples" / "FeedWatchdog"
-        ble6_example = installed_core_root / "examples" / "03.Board" / "BLE6FeatureProbe"
-        ble6_range_probe_example = installed_core_root / "examples" / "03.Board" / "BLE6RangeProbe"
-        ble_scan_monitor_example = installed_core_root / "examples" / "03.Board" / "BLEScanMonitor"
-        ble_central_monitor_example = installed_core_root / "examples" / "03.Board" / "BLECentralMonitor"
         ble_scan_example = installed_core_root / "libraries" / "Bluetooth" / "examples" / "BLEScan"
         ble_scan_foreach_example = installed_core_root / "libraries" / "Bluetooth" / "examples" / "BLEScanForEach"
         ble_central_example = installed_core_root / "libraries" / "Bluetooth" / "examples" / "BLECentralConnect"
@@ -200,62 +204,41 @@ def main() -> int:
         ieee802154_scan_example = (
             installed_core_root / "libraries" / "IEEE802154" / "examples" / "IEEE802154PassiveScan"
         )
-        ieee802154_probe_example = installed_core_root / "examples" / "03.Board" / "IEEE802154FeatureProbe"
 
-        if not basic_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {basic_example}")
-        if not i2c_target_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {i2c_target_example}")
-        if not serial_config_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {serial_config_example}")
-        if not spi_loopback_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {spi_loopback_example}")
-        if not low_power_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {low_power_example}")
-        if not low_power_profiles_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {low_power_profiles_example}")
-        if not peripheral_power_gating_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {peripheral_power_gating_example}")
-        if not cpu_freq_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {cpu_freq_example}")
-        if not watchdog_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {watchdog_example}")
-        if not matrix_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {matrix_example}")
-        if not watchdog_lib_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {watchdog_lib_example}")
-        if not ble6_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble6_example}")
-        if not ble6_range_probe_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble6_range_probe_example}")
-        if not ble_scan_monitor_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble_scan_monitor_example}")
-        if not ble_central_monitor_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble_central_monitor_example}")
-        if not ble_scan_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble_scan_example}")
-        if not ble_scan_foreach_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble_scan_foreach_example}")
-        if not ble_central_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ble_central_example}")
-        if not ieee802154_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ieee802154_example}")
-        if not ieee802154_scan_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ieee802154_scan_example}")
-        if not ieee802154_probe_example.is_dir():
-            raise RuntimeError(f"Missing installed example: {ieee802154_probe_example}")
+        required_examples = [
+            interrupt_example,
+            battery_example,
+            low_power_example,
+            low_power_profiles_example,
+            peripheral_power_gating_example,
+            cpu_freq_example,
+            watchdog_example,
+            lowpower_simple_example,
+            antenna_example,
+            radio_profile_example,
+            ieee802154_probe_example,
+            zigbee_scan_example,
+            zigbee_radio_config_example,
+            ble_scan_test_example,
+            ble_advertise_test_example,
+            ble_scan_monitor_example,
+            ble_central_monitor_example,
+            watchdog_lib_example,
+            ble_scan_example,
+            ble_scan_foreach_example,
+            ble_central_example,
+            ieee802154_example,
+            ieee802154_scan_example,
+        ]
+        for example in required_examples:
+            if not example.is_dir():
+                raise RuntimeError(f"Missing installed example: {example}")
 
         fqbn_default = "nrf54l15:nrf54l15:xiao_nrf54l15"
         fqbn_ble = (
             "nrf54l15:nrf54l15:xiao_nrf54l15:"
             "clean_radio_profile=ble_only,"
             "clean_bt_controller=zephyr_ll_sw"
-        )
-        fqbn_ble6 = (
-            "nrf54l15:nrf54l15:xiao_nrf54l15:"
-            "clean_radio_profile=ble_only,"
-            "clean_bt_controller=zephyr_ll_sw,"
-            "clean_ble6=channel_sounding"
         )
         fqbn_802154 = (
             "nrf54l15:nrf54l15:xiao_nrf54l15:"
@@ -267,318 +250,60 @@ def main() -> int:
             "clean_bt_controller=zephyr_ll_sw"
         )
 
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(basic_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(i2c_target_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(serial_config_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(spi_loopback_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(low_power_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(low_power_profiles_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(peripheral_power_gating_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(cpu_freq_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(watchdog_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(matrix_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_default,
-                str(watchdog_lib_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(ble_scan_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(ble_scan_foreach_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(ble_scan_monitor_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(ble_central_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(ble_central_monitor_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble,
-                str(matrix_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble6,
-                str(ble6_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_ble6,
-                str(ble6_range_probe_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_802154,
-                str(ieee802154_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_802154,
-                str(ieee802154_scan_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_802154,
-                str(ieee802154_probe_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_802154,
-                str(matrix_example),
-            ],
-            env=env,
-        )
-        run(
-            [
-                "arduino-cli",
-                "--config-file",
-                str(cfg_path),
-                "compile",
-                "--clean",
-                "-b",
-                fqbn_dual,
-                str(basic_example),
-            ],
-            env=env,
-        )
+        def compile_example(fqbn: str, sketch_dir: Path) -> None:
+            run(
+                [
+                    "arduino-cli",
+                    "--config-file",
+                    str(cfg_path),
+                    "compile",
+                    "--clean",
+                    "-b",
+                    fqbn,
+                    str(sketch_dir),
+                ],
+                env=env,
+            )
+
+        default_examples = [
+            interrupt_example,
+            battery_example,
+            low_power_example,
+            low_power_profiles_example,
+            peripheral_power_gating_example,
+            cpu_freq_example,
+            watchdog_example,
+            lowpower_simple_example,
+            antenna_example,
+            radio_profile_example,
+            watchdog_lib_example,
+        ]
+        for sketch in default_examples:
+            compile_example(fqbn_default, sketch)
+
+        ble_examples = [
+            ble_scan_example,
+            ble_scan_foreach_example,
+            ble_central_example,
+            ble_scan_test_example,
+            ble_advertise_test_example,
+            ble_scan_monitor_example,
+            ble_central_monitor_example,
+        ]
+        for sketch in ble_examples:
+            compile_example(fqbn_ble, sketch)
+
+        ieee802154_examples = [
+            ieee802154_example,
+            ieee802154_scan_example,
+            ieee802154_probe_example,
+            zigbee_scan_example,
+            zigbee_radio_config_example,
+        ]
+        for sketch in ieee802154_examples:
+            compile_example(fqbn_802154, sketch)
+
+        compile_example(fqbn_dual, radio_profile_example)
 
     print("Fresh machine Boards Manager smoke test passed.")
     return 0

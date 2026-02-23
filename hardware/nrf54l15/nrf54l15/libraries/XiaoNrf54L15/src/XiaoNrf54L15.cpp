@@ -171,35 +171,125 @@ bool applyPeripheralIfSupported(const XiaoNrf54L15Class& self, XiaoPeripheral pe
 
 void XiaoNrf54L15Class::setAntenna(XiaoAntennaMode antenna)
 {
-    xiaoNrf54l15SetAntenna(
-        antenna == XIAO_ANTENNA_EXTERNAL
-            ? XIAO_NRF54L15_ANTENNA_EXTERNAL
-            : XIAO_NRF54L15_ANTENNA_CERAMIC);
+    (void)setAntenna(antenna == XIAO_ANTENNA_EXTERNAL ? EXTERNAL : CERAMIC);
+}
+
+bool XiaoNrf54L15Class::setAntenna(Antenna antenna)
+{
+    return arduinoXiaoNrf54l15SetAntenna(antenna == EXTERNAL ? 1U : 0U) != 0U;
+}
+
+XiaoNrf54L15Class::Antenna XiaoNrf54L15Class::getAntenna() const
+{
+    return arduinoXiaoNrf54l15GetAntenna() == 1U ? EXTERNAL : CERAMIC;
 }
 
 XiaoAntennaMode XiaoNrf54L15Class::antenna() const
 {
-    return xiaoNrf54l15GetAntenna() == XIAO_NRF54L15_ANTENNA_EXTERNAL
-               ? XIAO_ANTENNA_EXTERNAL
-               : XIAO_ANTENNA_CERAMIC;
+    return getAntenna() == EXTERNAL ? XIAO_ANTENNA_EXTERNAL : XIAO_ANTENNA_CERAMIC;
 }
 
 bool XiaoNrf54L15Class::usingExternalAntenna() const
 {
-    return antenna() == XIAO_ANTENNA_EXTERNAL;
+    return getAntenna() == EXTERNAL;
+}
+
+bool XiaoNrf54L15Class::useCeramicAntenna()
+{
+    return setAntenna(CERAMIC);
+}
+
+bool XiaoNrf54L15Class::useExternalAntenna()
+{
+    return setAntenna(EXTERNAL);
+}
+
+XiaoNrf54L15Class::RadioProfile XiaoNrf54L15Class::getRadioProfile() const
+{
+#if defined(ARDUINO_XIAO_NRF54L15_RADIO_BLE_ONLY)
+    return RADIO_BLE_ONLY;
+#elif defined(ARDUINO_XIAO_NRF54L15_RADIO_DUAL)
+    return RADIO_DUAL;
+#elif defined(ARDUINO_XIAO_NRF54L15_RADIO_802154_ONLY)
+    return RADIO_802154_ONLY;
+#else
+    return RADIO_UNKNOWN;
+#endif
+}
+
+int XiaoNrf54L15Class::getBtTxPowerDbm() const
+{
+#if defined(CONFIG_BT_CTLR_TX_PWR_PLUS_8)
+    return 8;
+#elif defined(CONFIG_BT_CTLR_TX_PWR_MINUS_20)
+    return -20;
+#else
+    return 0;
+#endif
+}
+
+bool XiaoNrf54L15Class::isExternalAntennaBuild() const
+{
+#if defined(ARDUINO_XIAO_NRF54L15_EXT_ANTENNA)
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool XiaoNrf54L15Class::setBatteryMeasurementEnabled(bool enabled) const
+{
+    return arduinoXiaoNrf54l15SetBatteryEnable(enabled ? 1U : 0U) != 0U;
+}
+
+bool XiaoNrf54L15Class::batteryMeasurementEnabled() const
+{
+    return arduinoXiaoNrf54l15GetBatteryEnable() != 0U;
+}
+
+int XiaoNrf54L15Class::readBatteryRaw(uint8_t samples) const
+{
+    if (samples == 0U) {
+        samples = 1U;
+    }
+
+    if (!setBatteryMeasurementEnabled(true)) {
+        return 0;
+    }
+
+    delayMicroseconds(300);
+    analogReadResolution(12);
+
+    uint32_t accum = 0U;
+    for (uint8_t i = 0; i < samples; ++i) {
+        accum += static_cast<uint32_t>(analogRead(A7));
+    }
+
+    return static_cast<int>(accum / samples);
+}
+
+float XiaoNrf54L15Class::readBatteryVoltage(float dividerRatio, float referenceVoltage, uint8_t samples) const
+{
+    if (dividerRatio <= 0.0f || referenceVoltage <= 0.0f) {
+        return 0.0f;
+    }
+
+    const int raw = readBatteryRaw(samples);
+    return (static_cast<float>(raw) / 4095.0f) * referenceVoltage * dividerRatio;
 }
 
 const char* XiaoNrf54L15Class::radioProfileName() const
 {
-#if defined(ARDUINO_XIAO_NRF54L15_RADIO_DUAL)
-    return "BLE + 802.15.4";
-#elif defined(ARDUINO_XIAO_NRF54L15_RADIO_BLE_ONLY)
-    return "BLE only";
-#elif defined(ARDUINO_XIAO_NRF54L15_RADIO_802154_ONLY)
-    return "802.15.4 only";
-#else
-    return "disabled";
-#endif
+    switch (getRadioProfile()) {
+    case RADIO_BLE_ONLY:
+        return "BLE only";
+    case RADIO_DUAL:
+        return "BLE + 802.15.4";
+    case RADIO_802154_ONLY:
+        return "802.15.4 only";
+    default:
+        return "disabled";
+    }
 }
 
 bool XiaoNrf54L15Class::bleEnabled() const

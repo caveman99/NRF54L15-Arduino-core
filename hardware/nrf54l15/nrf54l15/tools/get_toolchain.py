@@ -185,8 +185,31 @@ def download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     curl = shutil.which("curl")
     if curl:
-        run(
-            [
+        resume_cmd = [
+            curl,
+            "-L",
+            "--fail",
+            "--retry",
+            "8",
+            "--retry-all-errors",
+            "--retry-delay",
+            "2",
+            "-C",
+            "-",
+            "-o",
+            str(dest),
+            url,
+        ]
+        result = run(resume_cmd, check=False, capture_output=True)
+        if result.returncode == 0:
+            return
+
+        stderr_text = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+        # Some mirrors return HTTP 416 when a stale cached archive is resumed.
+        # Retry once from byte 0 by deleting the partial file.
+        if "416" in stderr_text and dest.is_file():
+            dest.unlink(missing_ok=True)
+            fresh_cmd = [
                 curl,
                 "-L",
                 "--fail",
@@ -195,31 +218,47 @@ def download_file(url: str, dest: Path) -> None:
                 "--retry-all-errors",
                 "--retry-delay",
                 "2",
-                "-C",
-                "-",
                 "-o",
                 str(dest),
                 url,
-            ],
-            check=True,
-        )
-        return
+            ]
+            result = run(fresh_cmd, check=False, capture_output=True)
+            if result.returncode == 0:
+                return
+            stderr_text = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+
+        raise RuntimeError(f"curl download failed for {url}: {stderr_text}")
 
     wget = shutil.which("wget")
     if wget:
-        run(
-            [
-                wget,
-                "--continue",
-                "--tries=10",
-                "--retry-connrefused",
-                "-O",
-                str(dest),
-                url,
-            ],
-            check=True,
-        )
-        return
+        resume_cmd = [
+            wget,
+            "--continue",
+            "--tries=10",
+            "--retry-connrefused",
+            "-O",
+            str(dest),
+            url,
+        ]
+        result = run(resume_cmd, check=False, capture_output=True)
+        if result.returncode == 0:
+            return
+
+        dest.unlink(missing_ok=True)
+        fresh_cmd = [
+            wget,
+            "--tries=10",
+            "--retry-connrefused",
+            "-O",
+            str(dest),
+            url,
+        ]
+        result = run(fresh_cmd, check=False, capture_output=True)
+        if result.returncode == 0:
+            return
+
+        stderr_text = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+        raise RuntimeError(f"wget download failed for {url}: {stderr_text}")
 
     with urllib.request.urlopen(url) as response, dest.open("wb") as out:  # nosec B310 - fixed URL from GitHub API
         shutil.copyfileobj(response, out)

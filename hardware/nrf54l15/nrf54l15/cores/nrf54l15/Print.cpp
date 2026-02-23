@@ -6,6 +6,7 @@
 
 #include "Print.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -177,12 +178,45 @@ size_t Print::printSigned(long value, uint8_t base)
 
 size_t Print::printFloat(double value, uint8_t digits)
 {
-    char buf[48];
-    int precision = digits > 9 ? 9 : static_cast<int>(digits);
-    int written = snprintf(buf, sizeof(buf), "%.*f", precision, value);
-    if (written <= 0) {
-        return 0;
+    if (isnan(value)) {
+        return print("nan");
+    }
+    if (isinf(value)) {
+        return print("inf");
+    }
+    if (value > 4294967040.0 || value < -4294967040.0) {
+        return print("ovf");
     }
 
-    return write(buf);
+    uint8_t precision = digits > 9 ? 9 : digits;
+    size_t count = 0;
+
+    if (value < 0.0) {
+        count += write('-');
+        value = -value;
+    }
+
+    double rounding = 0.5;
+    for (uint8_t i = 0; i < precision; ++i) {
+        rounding /= 10.0;
+    }
+    value += rounding;
+
+    const unsigned long whole = static_cast<unsigned long>(value);
+    count += printNumber(whole, 10);
+
+    if (precision == 0) {
+        return count;
+    }
+
+    count += write('.');
+    double frac = value - static_cast<double>(whole);
+    for (uint8_t i = 0; i < precision; ++i) {
+        frac *= 10.0;
+        const uint8_t digit = static_cast<uint8_t>(frac);
+        count += write(static_cast<uint8_t>('0' + digit));
+        frac -= static_cast<double>(digit);
+    }
+
+    return count;
 }

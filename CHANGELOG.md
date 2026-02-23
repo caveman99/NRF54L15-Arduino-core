@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+- Curated packaged Arduino IDE examples to board-specific categories under
+  `examples/` (`BLE`, `Radio`, `Power`, `GPIO`, `Expansion`) and removed
+  generic Arduino-style Blink/Basic/Analog/Communication example sets.
+- Updated Boards Manager fresh-machine smoke coverage and release docs to the
+  curated example paths.
+- Added compatibility APIs and board helpers in `XiaoNrf54L15` for antenna,
+  radio profile, BLE TX power reporting, and battery measurement control.
+- Added VBAT control helpers in variant init and updated battery example for
+  `VBAT_EN` + `A7` measurement path.
+- Hardened `tools/get_toolchain.py` download flow to recover from stale resume
+  state (`HTTP 416`) by retrying with a clean archive download.
+
 ## 0.1.1 - 2026-02-15
 
 - Added legacy Seeed example sets from `hardware/seeed/nrf54l15/examples`
