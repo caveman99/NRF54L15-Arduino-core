@@ -13,6 +13,15 @@ Build/runtime basis:
 - Zephyr + NCS components are used by the build pipeline and are bootstrapped when needed.
 - Release/source archives remain publishable and lightweight by excluding bundled SDK payloads.
 
+## XIAO nRF54L15 Board Reference
+
+![XIAO nRF54L15 pin and board definition](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nr_definition.png)
+
+Hardware documents:
+- **Schematic (PDF)**: https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nRF54L15_Schematic.pdf
+- **Nordic nRF54L15 Datasheet (PDF)**: https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/Nordic_nRF54L15_Datasheet_v1.0.pdf
+- **Seeed Getting Started Wiki**: https://wiki.seeedstudio.com/xiao_nrf54l15_sense_getting_started/
+
 ## Features
 
 - ✅ **No bundled SDK payloads** - NCS/Zephyr SDK are bootstrapped at build time when needed
@@ -374,6 +383,10 @@ Apache License 2.0 - See LICENSE file for details
 
 - [nRF54L15 Product Page](https://www.nordicsemi.com/products/nrf54l15)
 - [XIAO nRF54L15 Wiki](https://wiki.seeedstudio.com/xiao_nrf54l15)
+- [XIAO nRF54L15 Getting Started](https://wiki.seeedstudio.com/xiao_nrf54l15_sense_getting_started/)
+- [XIAO nRF54L15 Schematic (PDF)](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nRF54L15_Schematic.pdf)
+- [XIAO nRF54L15 Pin/Board Definition Image](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nr_definition.png)
+- [Nordic nRF54L15 Datasheet (Seeed mirror PDF)](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/Nordic_nRF54L15_Datasheet_v1.0.pdf)
 - [Data Sheet](https://infocenter.nordicsemi.com/pdf/nRF54L15_PS_v1.0.pdf)
 
 ## Support
