@@ -237,6 +237,16 @@ bool XiaoNrf54L15Class::isExternalAntennaBuild() const
 #endif
 }
 
+bool XiaoNrf54L15Class::setRfSwitchEnabled(bool enabled) const
+{
+    return arduinoXiaoNrf54l15SetRfSwitchPower(enabled ? 1U : 0U) != 0U;
+}
+
+bool XiaoNrf54L15Class::rfSwitchEnabled() const
+{
+    return arduinoXiaoNrf54l15GetRfSwitchPower() != 0U;
+}
+
 bool XiaoNrf54L15Class::setBatteryMeasurementEnabled(bool enabled) const
 {
     return arduinoXiaoNrf54l15SetBatteryEnable(enabled ? 1U : 0U) != 0U;

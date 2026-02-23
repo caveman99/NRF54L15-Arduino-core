@@ -38,6 +38,7 @@ This smoke test validates installation and compilation of packaged examples, inc
 
 - `examples/GPIO/InterruptButton`
 - `examples/Power/battery`
+- `examples/Power/BatteryMeasure`
 - `examples/Power/LowPowerFeatures`
 - `examples/Power/LowPowerProfiles`
 - `examples/Power/PeripheralPowerGating`
@@ -46,6 +47,7 @@ This smoke test validates installation and compilation of packaged examples, inc
 - `examples/Power/lowpower`
 - `examples/Radio/AntennaControl`
 - `examples/Radio/RadioProfileInfo`
+- `examples/Radio/RFChipDisable`
 - `libraries/Watchdog/examples/FeedWatchdog`
 - `libraries/Bluetooth/examples/BLEScan` (BLE menu profile)
 - `libraries/Bluetooth/examples/BLEScanForEach` (BLE menu profile)

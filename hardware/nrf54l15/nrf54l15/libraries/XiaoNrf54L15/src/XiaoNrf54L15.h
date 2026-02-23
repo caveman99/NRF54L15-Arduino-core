@@ -50,6 +50,8 @@ public:
     RadioProfile getRadioProfile() const;
     int getBtTxPowerDbm() const;
     bool isExternalAntennaBuild() const;
+    bool setRfSwitchEnabled(bool enabled = true) const;
+    bool rfSwitchEnabled() const;
 
     // VBAT helpers for XIAO nRF54L15 battery monitor path.
     bool setBatteryMeasurementEnabled(bool enabled = true) const;

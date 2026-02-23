@@ -17,6 +17,8 @@ xiao_nrf54l15_antenna_t xiaoNrf54l15GetAntenna(void);
 
 uint8_t arduinoXiaoNrf54l15SetAntenna(uint8_t selection);
 uint8_t arduinoXiaoNrf54l15GetAntenna(void);
+uint8_t arduinoXiaoNrf54l15SetRfSwitchPower(uint8_t enabled);
+uint8_t arduinoXiaoNrf54l15GetRfSwitchPower(void);
 
 uint8_t arduinoXiaoNrf54l15SetBatteryEnable(uint8_t enabled);
 uint8_t arduinoXiaoNrf54l15GetBatteryEnable(void);

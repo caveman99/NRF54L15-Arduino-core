@@ -26,7 +26,29 @@ constexpr uint8_t kRfSwitchCeramic = 0U;
 constexpr uint8_t kRfSwitchExternal = 1U;
 
 uint8_t g_rf_switch_selection = kRfSwitchCeramic;
+uint8_t g_rf_switch_power = 0U;
 uint8_t g_battery_enable = 0U;
+
+int applyRfSwitchPower(uint8_t enabled)
+{
+    const struct device *const gpio2 = DEVICE_DT_GET(DT_NODELABEL(gpio2));
+    if (!device_is_ready(gpio2)) {
+        return -ENODEV;
+    }
+
+    int ret = gpio_pin_configure(gpio2, kRfSwitchPowerPin, GPIO_OUTPUT);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = gpio_pin_set(gpio2, kRfSwitchPowerPin, enabled ? 1 : 0);
+    if (ret < 0) {
+        return ret;
+    }
+
+    g_rf_switch_power = enabled ? 1U : 0U;
+    return 0;
+}
 
 int applyRfSwitchSelection(uint8_t selection)
 {
@@ -37,12 +59,7 @@ int applyRfSwitchSelection(uint8_t selection)
 
     const uint8_t normalized_selection = (selection == kRfSwitchExternal) ? kRfSwitchExternal : kRfSwitchCeramic;
 
-    int ret = gpio_pin_configure(gpio2, kRfSwitchPowerPin, GPIO_OUTPUT);
-    if (ret < 0) {
-        return ret;
-    }
-
-    ret = gpio_pin_set(gpio2, kRfSwitchPowerPin, 1);
+    int ret = applyRfSwitchPower(1U);
     if (ret < 0) {
         return ret;
     }
@@ -92,6 +109,16 @@ extern "C" uint8_t arduinoXiaoNrf54l15SetAntenna(uint8_t selection)
 extern "C" uint8_t arduinoXiaoNrf54l15GetAntenna(void)
 {
     return g_rf_switch_selection;
+}
+
+extern "C" uint8_t arduinoXiaoNrf54l15SetRfSwitchPower(uint8_t enabled)
+{
+    return applyRfSwitchPower(enabled) == 0 ? 1U : 0U;
+}
+
+extern "C" uint8_t arduinoXiaoNrf54l15GetRfSwitchPower(void)
+{
+    return g_rf_switch_power;
 }
 
 extern "C" uint8_t arduinoXiaoNrf54l15SetBatteryEnable(uint8_t enabled)

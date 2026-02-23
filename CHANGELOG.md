@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.4 - 2026-02-23
+
+- Added explicit RF switch chip power control API in `XiaoNrf54L15`:
+  `setRfSwitchEnabled()` / `rfSwitchEnabled()`.
+- Added variant-level C wrappers for RF switch power (`RF_SW_PWR` on P2.03)
+  and kept antenna select control on `RF_SW_SEL` (P2.05).
+- Added new board-specific curated examples:
+  `examples/Power/BatteryMeasure` and `examples/Radio/RFChipDisable`.
+- Updated fresh-machine smoke coverage and release documentation to include
+  the new battery and RF-control examples.
+
 ## 0.1.3 - 2026-02-23
 
 - Fixed Zephyr SDK bootstrap corruption handling in `tools/get_toolchain.py`:

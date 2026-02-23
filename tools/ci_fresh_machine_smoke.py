@@ -178,6 +178,7 @@ def main() -> int:
 
         interrupt_example = installed_core_root / "examples" / "GPIO" / "InterruptButton"
         battery_example = installed_core_root / "examples" / "Power" / "battery"
+        battery_measure_example = installed_core_root / "examples" / "Power" / "BatteryMeasure"
         low_power_example = installed_core_root / "examples" / "Power" / "LowPowerFeatures"
         low_power_profiles_example = installed_core_root / "examples" / "Power" / "LowPowerProfiles"
         peripheral_power_gating_example = installed_core_root / "examples" / "Power" / "PeripheralPowerGating"
@@ -187,6 +188,7 @@ def main() -> int:
 
         antenna_example = installed_core_root / "examples" / "Radio" / "AntennaControl"
         radio_profile_example = installed_core_root / "examples" / "Radio" / "RadioProfileInfo"
+        rf_chip_disable_example = installed_core_root / "examples" / "Radio" / "RFChipDisable"
         ieee802154_probe_example = installed_core_root / "examples" / "Radio" / "IEEE802154FeatureProbe"
         zigbee_scan_example = installed_core_root / "examples" / "Radio" / "zigbee_scan"
         zigbee_radio_config_example = installed_core_root / "examples" / "Radio" / "zigbee_radio_config"
@@ -208,6 +210,7 @@ def main() -> int:
         required_examples = [
             interrupt_example,
             battery_example,
+            battery_measure_example,
             low_power_example,
             low_power_profiles_example,
             peripheral_power_gating_example,
@@ -216,6 +219,7 @@ def main() -> int:
             lowpower_simple_example,
             antenna_example,
             radio_profile_example,
+            rf_chip_disable_example,
             ieee802154_probe_example,
             zigbee_scan_example,
             zigbee_radio_config_example,
@@ -268,6 +272,7 @@ def main() -> int:
         default_examples = [
             interrupt_example,
             battery_example,
+            battery_measure_example,
             low_power_example,
             low_power_profiles_example,
             peripheral_power_gating_example,
@@ -276,6 +281,7 @@ def main() -> int:
             lowpower_simple_example,
             antenna_example,
             radio_profile_example,
+            rf_chip_disable_example,
             watchdog_lib_example,
         ]
         for sketch in default_examples:
