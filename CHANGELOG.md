@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.1.2 - 2026-02-23
 
 - Curated packaged Arduino IDE examples to board-specific categories under
   `examples/` (`BLE`, `Radio`, `Power`, `GPIO`, `Expansion`) and removed
