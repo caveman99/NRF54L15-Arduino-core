@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.5 - 2026-02-23
+
+- Added a dedicated Arduino board profile:
+  `xiao_nrf54l15_sense` / `XIAO nRF54L15 Sense (Zephyr-Based)`.
+- Added Sense-specific Zephyr fragment
+  `zephyr/arduino_base/conf/sense_features.conf` to enable IMU driver support
+  (`CONFIG_SENSOR` + `CONFIG_LSM6DSL`) when Sense board profile is selected.
+- Extended prebuild Zephyr hook wiring to accept Sense-specific Kconfig/overlay
+  arguments from board properties.
+- Added curated Sense examples:
+  `examples/Sense/IMUOrientation` and `examples/Sense/MicrophoneLevel`.
+- Refactored Sense examples so `.ino` files stay Arduino-only and Zephyr
+  headers/devicetree logic live in local `.cpp` backends, fixing Arduino
+  preprocessor compatibility on fresh installs.
+- Removed outdated `examples/Expansion/*` sketches from packaged core examples
+  to keep Arduino IDE categories focused on board-core features.
+- Updated release docs, example category docs, CI smoke checks, and top-level
+  README to include Sense board support and examples.
+
 ## 0.1.4 - 2026-02-23
 
 - Added explicit RF switch chip power control API in `XiaoNrf54L15`:

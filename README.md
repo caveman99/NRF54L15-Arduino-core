@@ -33,7 +33,7 @@ Hardware documents:
 - ✅ **CMSIS-DAP debug** - Works with built-in debugger on XIAO boards
 - ✅ **Cross-platform uploader** - `Auto` runner selects `pyOCD` then `OpenOCD`
 - ✅ **Board Tools menu** - Upload method, CPU frequency, antenna, radio profile
-- ✅ **Curated board-specific examples** - Arduino IDE menu is focused on XIAO nRF54L15 BLE/radio/power/expansion workflows
+- ✅ **Curated board-specific examples** - Arduino IDE menu is focused on XIAO nRF54L15 BLE/radio/power/GPIO/Sense workflows
 
 ## Supported Boards
 
@@ -52,6 +52,13 @@ Hardware documents:
 - **Watchdog compatibility library** (`Watchdog.begin(...)`, `Watchdog.feed()`)
 - **12-bit ADC** with 8 channels
 - **4x PWM outputs**
+
+### Seeed Studio XIAO nRF54L15 Sense
+- Everything from **XIAO nRF54L15** plus onboard sensors
+- **6-DoF IMU** (`LSM6DS3TR-C`)
+- **Digital microphone** (`MSM261DGT006`, PDM/DMIC)
+- Dedicated board option in Arduino IDE: **XIAO nRF54L15 Sense (Zephyr-Based)**
+- Curated Sense examples under `Examples > Sense`
 
 ## Installation
 
@@ -166,7 +173,7 @@ Troubleshooting if the core does not appear in Boards Manager:
 To generate release archive + checksum + updated package index before publishing:
 
 ```bash
-python3 tools/release_boards_manager.py --version 0.1.1 --repo lolren/NRF54L15-Arduino-core
+python3 tools/release_boards_manager.py --version <new_version> --repo lolren/NRF54L15-Arduino-core
 ```
 
 To run a local fresh-machine Boards Manager smoke test:
@@ -314,7 +321,6 @@ The core includes several examples:
 - **Power/PeripheralPowerGating** - manual peripheral suspend/resume shell
 - **Power/WatchdogSleepWake** - watchdog + sleep + reset-cause validation
 - **GPIO/InterruptButton** - interrupt-driven button handling on board pin map
-- **Expansion/oled**, **Expansion/rtc**, **Expansion/buzzer** - XIAO expansion-board focused demos
 - **libraries/Bluetooth/examples/** - BLE API examples for the clean core
 - **libraries/Bluetooth/examples/BLEScanForEach** - callback-based scan stream demo
 - **libraries/Bluetooth/examples/BLECentralConnect** - central connect/disconnect cycle
@@ -322,6 +328,8 @@ The core includes several examples:
 - **libraries/Watchdog/examples/FeedWatchdog** - simple `Watchdog.begin()/feed()` compatibility check
 - **libraries/XiaoNrf54L15/examples/AntennaSelect** - Runtime antenna switching + radio profile info
 - **Power/CpuFrequencyControl** - CPU frequency monitor/control (Tools + optional runtime set)
+- **Sense/IMUOrientation** - onboard IMU accel/gyro stream
+- **Sense/MicrophoneLevel** - onboard DMIC buffer level monitor
 
 ## Memory Usage
 

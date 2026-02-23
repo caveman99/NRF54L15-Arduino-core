@@ -2,7 +2,7 @@
 # Licensed under the Apache License 2.0
 
 name=Seeed nRF54L15 (Zephyr-Based)
-version=0.1.4
+version=0.1.5
 category=ARM
 
 # Python launcher used by upload helper (cross-platform)
@@ -37,7 +37,7 @@ compiler.cpp.extra_flags=-D__ZEPHYR__=1 -D__CORTEX_M33=1 -D__FPU_PRESENT=1 -I{bu
 compiler.S.extra_flags=-D__ZEPHYR__=1 -D__CORTEX_M33=1 -D__FPU_PRESENT=1 -I{build.variant.path}/zephyr_lib/include -I{build.variant.path}/zephyr_lib/include/generated -I{build.variant.path}/zephyr_lib/include/modules/cmsis_6 -I{build.variant.path}/zephyr_lib/include/modules/cmsis
 
 # Build recipes
-recipe.hooks.sketch.prebuild.1.pattern="{tools.python3.cmd}" {tools.python3.args} "{runtime.platform.path}/tools/build_zephyr_lib.py" --quiet --extra-conf "{build.zephyr_conf_radio}" --extra-conf "{build.zephyr_conf_bt_controller}" --extra-conf "{build.zephyr_conf_ble6}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_cpu}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_bt_controller}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_radio}"
+recipe.hooks.sketch.prebuild.1.pattern="{tools.python3.cmd}" {tools.python3.args} "{runtime.platform.path}/tools/build_zephyr_lib.py" --quiet --extra-conf "{build.zephyr_conf_radio}" --extra-conf "{build.zephyr_conf_bt_controller}" --extra-conf "{build.zephyr_conf_ble6}" --extra-conf "{build.zephyr_conf_sense}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_cpu}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_bt_controller}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_radio}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_sense}"
 
 recipe.c.o.pattern="{compiler.path}{compiler.c.cmd}" {compiler.c.flags} -D__ZEPHYR__=1 -D__CORTEX_M33=1 -D__FPU_PRESENT=1 -I{build.variant.path}/zephyr_lib/include -I{build.variant.path}/zephyr_lib/include/generated -I{build.variant.path}/zephyr_lib/include/modules/cmsis_6 -I{build.variant.path}/zephyr_lib/include/modules/cmsis {build.extra_flags} {build.cpu_flags} {build.radio_cpu_flags} {build.rf_antenna_flags} {build.radio_profile_flags} {build.bt_controller_flags} {build.ble6_flags} {includes} -c "{source_file}" -o "{object_file}"
 recipe.cpp.o.pattern="{compiler.path}{compiler.cpp.cmd}" {compiler.cpp.flags} -D__ZEPHYR__=1 -D__CORTEX_M33=1 -D__FPU_PRESENT=1 -I{build.variant.path}/zephyr_lib/include -I{build.variant.path}/zephyr_lib/include/generated -I{build.variant.path}/zephyr_lib/include/modules/cmsis_6 -I{build.variant.path}/zephyr_lib/include/modules/cmsis {build.extra_flags} {build.cpu_flags} {build.radio_cpu_flags} {build.rf_antenna_flags} {build.radio_profile_flags} {build.bt_controller_flags} {build.ble6_flags} {includes} -c "{source_file}" -o "{object_file}"

@@ -189,6 +189,8 @@ def main() -> int:
         antenna_example = installed_core_root / "examples" / "Radio" / "AntennaControl"
         radio_profile_example = installed_core_root / "examples" / "Radio" / "RadioProfileInfo"
         rf_chip_disable_example = installed_core_root / "examples" / "Radio" / "RFChipDisable"
+        sense_imu_example = installed_core_root / "examples" / "Sense" / "IMUOrientation"
+        sense_mic_example = installed_core_root / "examples" / "Sense" / "MicrophoneLevel"
         ieee802154_probe_example = installed_core_root / "examples" / "Radio" / "IEEE802154FeatureProbe"
         zigbee_scan_example = installed_core_root / "examples" / "Radio" / "zigbee_scan"
         zigbee_radio_config_example = installed_core_root / "examples" / "Radio" / "zigbee_radio_config"
@@ -220,6 +222,8 @@ def main() -> int:
             antenna_example,
             radio_profile_example,
             rf_chip_disable_example,
+            sense_imu_example,
+            sense_mic_example,
             ieee802154_probe_example,
             zigbee_scan_example,
             zigbee_radio_config_example,
@@ -239,6 +243,7 @@ def main() -> int:
                 raise RuntimeError(f"Missing installed example: {example}")
 
         fqbn_default = "nrf54l15:nrf54l15:xiao_nrf54l15"
+        fqbn_sense = "nrf54l15:nrf54l15:xiao_nrf54l15_sense"
         fqbn_ble = (
             "nrf54l15:nrf54l15:xiao_nrf54l15:"
             "clean_radio_profile=ble_only,"
@@ -286,6 +291,13 @@ def main() -> int:
         ]
         for sketch in default_examples:
             compile_example(fqbn_default, sketch)
+
+        sense_examples = [
+            sense_imu_example,
+            sense_mic_example,
+        ]
+        for sketch in sense_examples:
+            compile_example(fqbn_sense, sketch)
 
         ble_examples = [
             ble_scan_example,
