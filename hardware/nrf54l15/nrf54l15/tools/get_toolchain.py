@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import lzma
 import os
 import re
 import shutil
@@ -293,6 +294,13 @@ def archive_size_matches(path: Path, expected_bytes: int) -> bool:
         return path.stat().st_size == expected_bytes
     except OSError:
         return False
+
+
+def archive_size_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def ensure_hosttools_installer_available(
@@ -612,10 +620,18 @@ def main() -> int:
             if archive_size_matches(archive_path, archive_expected_size):
                 print(f"Using existing SDK archive: {archive_path}")
             else:
-                print(
-                    "Existing SDK archive size mismatch, attempting resume/re-download: "
-                    f"{archive_path}"
-                )
+                actual_size = archive_size_bytes(archive_path)
+                if archive_expected_size > 0 and actual_size > archive_expected_size:
+                    print(
+                        "Existing SDK archive is larger than expected, deleting cached file before "
+                        f"re-download: {archive_path}"
+                    )
+                    archive_path.unlink(missing_ok=True)
+                else:
+                    print(
+                        "Existing SDK archive size mismatch, attempting resume/re-download: "
+                        f"{archive_path}"
+                    )
 
         if (not archive_path.is_file()) or (not archive_size_matches(archive_path, archive_expected_size)):
             print(f"Downloading {archive_name} (attempt {attempt}/{download_retries}) ...")
@@ -623,11 +639,24 @@ def main() -> int:
 
         size_matches = archive_size_matches(archive_path, archive_expected_size)
         if not size_matches:
-            actual_size = archive_path.stat().st_size if archive_path.is_file() else 0
+            actual_size = archive_size_bytes(archive_path)
+            if archive_expected_size > 0 and actual_size > archive_expected_size:
+                print(
+                    "Downloaded SDK archive is larger than expected "
+                    f"(expected {archive_expected_size}, got {actual_size}); "
+                    "removing and retrying a clean download."
+                )
+                archive_path.unlink(missing_ok=True)
+                if attempt >= download_retries:
+                    raise RuntimeError(
+                        "Failed to download a valid Zephyr SDK archive after retries; "
+                        "download payload stayed larger than expected."
+                    )
+                continue
             print(
                 "Downloaded SDK archive size mismatch "
-                f"(expected {archive_expected_size}, got {actual_size}). "
-                "Attempting extraction anyway..."
+                f"(expected {archive_expected_size}, got {actual_size}); "
+                "attempting extraction to validate archive integrity."
             )
 
         try:
@@ -643,7 +672,7 @@ def main() -> int:
             if not size_matches:
                 print("Extraction succeeded despite size mismatch.")
             break
-        except (EOFError, tarfile.ReadError, OSError, RuntimeError) as exc:
+        except (EOFError, tarfile.ReadError, lzma.LZMAError, OSError, RuntimeError) as exc:
             archive_path.unlink(missing_ok=True)
             if attempt >= download_retries:
                 raise RuntimeError(

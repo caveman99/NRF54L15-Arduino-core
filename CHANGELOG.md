@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.3 - 2026-02-23
+
+- Fixed Zephyr SDK bootstrap corruption handling in `tools/get_toolchain.py`:
+  `_lzma.LZMAError` is now treated as a retryable extraction failure.
+- Added archive-size guard rails in toolchain bootstrap so oversized cached
+  downloads are deleted and re-fetched cleanly before extraction.
+- Applied the same download/extract hardening to both packaged script trees:
+  `hardware/nrf54l15/nrf54l15/tools/get_toolchain.py` and
+  `hardware/seeed/nrf54l15/tools/get_toolchain.py`.
+
 ## 0.1.2 - 2026-02-23
 
 - Curated packaged Arduino IDE examples to board-specific categories under

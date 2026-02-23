@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import lzma
 import os
 import shutil
 import sys
@@ -50,7 +51,11 @@ def fetch_release_assets(version: str) -> List[Dict[str, str]]:
         data = json.loads(response.read().decode("utf-8"))
     assets = data.get("assets", [])
     return [
-        {"name": asset.get("name", ""), "url": asset.get("browser_download_url", "")}
+        {
+            "name": asset.get("name", ""),
+            "url": asset.get("browser_download_url", ""),
+            "size": str(asset.get("size", 0)),
+        }
         for asset in assets
         if asset.get("name") and asset.get("browser_download_url")
     ]
@@ -99,6 +104,44 @@ def download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url) as response, dest.open("wb") as out:  # nosec B310 - fixed URL from GitHub API
         shutil.copyfileobj(response, out)
+
+
+def parse_positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def expected_size(asset: Dict[str, str]) -> int:
+    raw = str(asset.get("size", "")).strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
+def archive_size_matches(path: Path, expected_bytes: int) -> bool:
+    if expected_bytes <= 0:
+        return True
+    try:
+        return path.stat().st_size == expected_bytes
+    except OSError:
+        return False
+
+
+def archive_size_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def safe_extract_tar(archive: Path, target_dir: Path) -> None:
@@ -308,6 +351,7 @@ def main() -> int:
     keep_archive = os.environ.get("KEEP_ZEPHYR_SDK_ARCHIVE", "1") == "1"
     prune_sdk = os.environ.get("PRUNE_ZEPHYR_SDK", "1") == "1"
     prune_multilib = os.environ.get("PRUNE_ZEPHYR_SDK_MULTIARCH", "1") == "1"
+    download_retries = parse_positive_int_env("ZEPHYR_SDK_DOWNLOAD_RETRIES", 10)
 
     compiler = sdk_tool(sdk_dir, "arm-zephyr-eabi-gcc")
     if compiler and compiler.is_file():
@@ -322,23 +366,77 @@ def main() -> int:
     chosen = pick_sdk_asset(sdk_version, host_os, host_arch, assets)
     archive_name = chosen["name"]
     archive_url = chosen["url"]
+    archive_expected_size = expected_size(chosen)
     archive_path = tools_dir / archive_name
 
-    if not archive_path.is_file():
-        print(f"Downloading {archive_name} ...")
-        download_file(archive_url, archive_path)
-    else:
-        print(f"Using existing SDK archive: {archive_path}")
+    for attempt in range(1, download_retries + 1):
+        if archive_path.is_file():
+            if archive_size_matches(archive_path, archive_expected_size):
+                print(f"Using existing SDK archive: {archive_path}")
+            else:
+                actual_size = archive_size_bytes(archive_path)
+                if archive_expected_size > 0 and actual_size > archive_expected_size:
+                    print(
+                        "Existing SDK archive is larger than expected, deleting cached file before "
+                        f"re-download: {archive_path}"
+                    )
+                    archive_path.unlink(missing_ok=True)
+                else:
+                    print(
+                        "Existing SDK archive size mismatch, re-downloading: "
+                        f"{archive_path}"
+                    )
 
-    with tempfile.TemporaryDirectory(prefix="zephyr-sdk-extract-", dir=str(tools_dir)) as temp_dir:
-        extract_root = Path(temp_dir)
-        print("Extracting Zephyr SDK...")
-        extract_archive(archive_path, extract_root)
-        extracted_dir = find_extracted_sdk_dir(extract_root, sdk_version)
+        if (not archive_path.is_file()) or (not archive_size_matches(archive_path, archive_expected_size)):
+            print(f"Downloading {archive_name} (attempt {attempt}/{download_retries}) ...")
+            download_file(archive_url, archive_path)
 
-        if sdk_dir.exists():
-            shutil.rmtree(sdk_dir)
-        shutil.move(str(extracted_dir), str(sdk_dir))
+        size_matches = archive_size_matches(archive_path, archive_expected_size)
+        if not size_matches:
+            actual_size = archive_size_bytes(archive_path)
+            if archive_expected_size > 0 and actual_size > archive_expected_size:
+                print(
+                    "Downloaded SDK archive is larger than expected "
+                    f"(expected {archive_expected_size}, got {actual_size}); "
+                    "removing and retrying a clean download."
+                )
+                archive_path.unlink(missing_ok=True)
+                if attempt >= download_retries:
+                    raise RuntimeError(
+                        "Failed to download a valid Zephyr SDK archive after retries; "
+                        "download payload stayed larger than expected."
+                    )
+                continue
+            print(
+                "Downloaded SDK archive size mismatch "
+                f"(expected {archive_expected_size}, got {actual_size}); "
+                "attempting extraction to validate archive integrity."
+            )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="zephyr-sdk-extract-", dir=str(tools_dir)) as temp_dir:
+                extract_root = Path(temp_dir)
+                print("Extracting Zephyr SDK...")
+                extract_archive(archive_path, extract_root)
+                extracted_dir = find_extracted_sdk_dir(extract_root, sdk_version)
+
+                if sdk_dir.exists():
+                    shutil.rmtree(sdk_dir)
+                shutil.move(str(extracted_dir), str(sdk_dir))
+            if not size_matches:
+                print("Extraction succeeded despite size mismatch.")
+            break
+        except (EOFError, tarfile.ReadError, lzma.LZMAError, OSError, RuntimeError) as exc:
+            archive_path.unlink(missing_ok=True)
+            if attempt >= download_retries:
+                raise RuntimeError(
+                    "Failed to extract Zephyr SDK archive after retries; "
+                    "download may be corrupted."
+                ) from exc
+            print(
+                "SDK archive extract failed; removing cached archive and retrying download. "
+                f"(attempt {attempt}/{download_retries})"
+            )
 
     compiler = sdk_tool(sdk_dir, "arm-zephyr-eabi-gcc")
     if not compiler or not compiler.is_file():
