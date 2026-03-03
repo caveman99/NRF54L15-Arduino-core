@@ -70,6 +70,8 @@ enum {
 #define PIN_SERIAL_RX (PIN_D7)
 #define PIN_SERIAL1_TX PIN_SERIAL_TX
 #define PIN_SERIAL1_RX PIN_SERIAL_RX
+#define PIN_SERIAL2_TX PIN_SERIAL1_TX
+#define PIN_SERIAL2_RX PIN_SERIAL1_RX
 
 // SPI pins
 #define PIN_SPI_MOSI (PIN_D10)
@@ -94,5 +96,9 @@ static inline uint8_t analogInputToDigitalPin(uint8_t p)
 #define SERIAL_PORT_USBVIRTUAL Serial
 #define SERIAL_PORT_HARDWARE Serial1
 #define SERIAL_PORT_HARDWARE1 Serial1
+#define SERIAL_PORT_HARDWARE2 Serial2
+
+#define HAVE_HWSERIAL1
+#define HAVE_HWSERIAL2
 
 #endif // Pins_Arduino_h

@@ -7,7 +7,7 @@ import hashlib
 import json
 import tarfile
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Sequence
 
 DEFAULT_EXCLUDES = [
     ".DS_Store",
@@ -15,6 +15,8 @@ DEFAULT_EXCLUDES = [
     "tools/ncs/**",
     "tools/ncs.partial/**",
     "tools/zephyr-sdk/**",
+    "tools/zephyr-sdk-*/**",
+    "tools/zephyr-sdk-*.tar.*",
     "tools/host-tools/**",
     "tools/toolchain-bootstrap/**",
     "variants/*/zephyr_lib/**",
@@ -71,7 +73,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package-name", default="nrf54l15")
     parser.add_argument("--architecture", default="nrf54l15")
     parser.add_argument("--platform-name", default="Seeed nRF54L15 (Zephyr-Based)")
-    parser.add_argument("--board-name", default="XIAO nRF54L15 (Zephyr-Based - NO BLE)")
+    parser.add_argument(
+        "--board-name",
+        action="append",
+        default=None,
+        help=(
+            "Board name to expose in package index. "
+            "Can be repeated to publish multiple board names."
+        ),
+    )
     parser.add_argument("--category", default="Arduino")
     parser.add_argument("--maintainer", default="Seeed Studio")
     parser.add_argument(
@@ -220,7 +230,7 @@ def write_index(
     archive_name: str,
     sha256: str,
     size: int,
-    board_name: str,
+    board_names: Sequence[str],
 ) -> None:
     existing_platforms = load_existing_platforms(index_path, package_name, architecture, version)
 
@@ -233,7 +243,7 @@ def write_index(
         "archiveFileName": archive_name,
         "checksum": f"SHA-256:{sha256}",
         "size": str(size),
-        "boards": [{"name": board_name}],
+        "boards": [{"name": name} for name in board_names],
         "help": {"online": help_url},
         "toolsDependencies": [],
         "discoveryDependencies": [],
@@ -288,6 +298,11 @@ def main() -> int:
         or f"https://github.com/{repo}/releases/download/{release_tag}/{archive_name}"
     )
 
+    board_names = args.board_name or [
+        "XIAO nRF54L15 (Zephyr-Based - NO BLE)",
+        "XIAO nRF54L15 Sense (Zephyr-Based)",
+    ]
+
     result = build_archive(source_root, archive_path, archive_root, source_date_epoch)
 
     index_path = Path(args.index_path).resolve()
@@ -305,7 +320,7 @@ def main() -> int:
         archive_name=archive_name,
         sha256=str(result["sha256"]),
         size=int(result["size"]),
-        board_name=args.board_name,
+        board_names=board_names,
     )
 
     print(f"Archive: {archive_path}")

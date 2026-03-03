@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.6 - 2026-03-03
+
+- Added missing Arduino compatibility macros and aliases in `Arduino.h`:
+  `min`, `max`, `bit`, `_BV`, `PROGMEM`, and `PSTR`.
+- Added the 2-argument compatibility overloads for `pulseIn()` and
+  `pulseInLong()`.
+- Expanded `WString` API compatibility with base-aware numeric constructors,
+  `toUpperCase()`, `indexOf()` overloads, `substring()`, and `toCharArray()`.
+- Added AVR compatibility header `cores/nrf54l15/avr/pgmspace.h` with common
+  `*_P` memory/string helpers and `pgm_read_*` macros.
+- Added serial and I2C compatibility aliases (`Serial2`, `Wire1`) and variant
+  metadata (`PIN_SERIAL2_TX/RX`, `SERIAL_PORT_HARDWARE2`, `HAVE_HWSERIAL2`)
+  to improve third-party library compatibility.
+
 ## 0.1.5 - 2026-02-23
 
 - Added a dedicated Arduino board profile:

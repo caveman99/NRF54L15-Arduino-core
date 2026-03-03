@@ -71,6 +71,7 @@ TwoWire* resolveWireFromTarget(struct i2c_target_config* config)
 } // namespace
 
 TwoWire Wire(NRF_TWIM21, PIN_WIRE_SDA, PIN_WIRE_SCL);
+TwoWire &Wire1 = Wire;
 
 TwoWire::TwoWire(NRF_TWIM_Type* twim, uint8_t sda, uint8_t scl)
     : _i2c(resolveI2C())

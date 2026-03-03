@@ -167,3 +167,4 @@ HardwareSerial::operator bool() const
 
 HardwareSerial Serial(resolveConsoleDevice());
 HardwareSerial Serial1(resolveSerial1Device());
+HardwareSerial &Serial2 = Serial1;

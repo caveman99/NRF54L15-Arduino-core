@@ -104,6 +104,12 @@ typedef uint8_t pin_size_t;
 #define RAD_TO_DEG 57.295779513082320876798154814105
 
 // Math macros
+#ifndef min
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef max
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#endif
 #ifndef abs
 #define abs(x) ((x) > 0 ? (x) : -(x))
 #endif
@@ -120,6 +126,12 @@ typedef uint8_t pin_size_t;
 #define highByte(w) ((uint8_t)((w) >> 8))
 
 // Bit macros
+#ifndef bit
+#define bit(b) (1UL << (b))
+#endif
+#ifndef _BV
+#define _BV(b) (1UL << (b))
+#endif
 #define bitRead(value, bit) (((value) >> (bit)) & 0x01)
 #define bitSet(value, bit) ((value) |= (1UL << (bit)))
 #define bitClear(value, bit) ((value) &= ~(1UL << (bit)))
@@ -136,6 +148,12 @@ typedef uint8_t pin_size_t;
 #define microsecondsToClockCycles(a) ((a) * clockCyclesPerMicrosecond())
 
 // Flash string macro
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+#ifndef PSTR
+#define PSTR(str_literal) (str_literal)
+#endif
 #define F(str_literal) (str_literal)
 
 // ============================================================================
@@ -219,6 +237,16 @@ inline long random(long min, long max)
 inline void tone(uint8_t pin, unsigned int frequency)
 {
     tone(pin, frequency, 0);
+}
+
+inline unsigned long pulseIn(uint8_t pin, uint8_t state)
+{
+    return pulseIn(pin, state, 1000000UL);
+}
+
+inline unsigned long pulseInLong(uint8_t pin, uint8_t state)
+{
+    return pulseInLong(pin, state, 1000000UL);
 }
 
 // Include C++ classes
