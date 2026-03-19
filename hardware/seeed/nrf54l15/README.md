@@ -46,13 +46,14 @@ rsync -a --delete --exclude '.arduino-zephyr-build/' /home/lolren/Desktop/Nrf54L
 
 Upload uses `tools/flash_zephyr.py` (no `avrdude`).
 
-- All runners (`openocd`, `jlink`, `nrfutil`, `nrfjprog`) are flashed through Zephyr `west flash`.
+- `pyocd` is available as a direct upload runner and performs an explicit reset after flashing.
+- `openocd`, `jlink`, `nrfutil`, and `nrfjprog` are flashed through Zephyr `west flash`.
 
 - Default is `Auto`, which picks the best available runner.
 - Manual override is available in Arduino: `Tools -> Upload Method`.
-- Supported runners: `openocd`, `jlink`, `nrfutil`, `nrfjprog`.
+- Supported runners: `pyocd`, `openocd`, `jlink`, `nrfutil`, `nrfjprog`.
 
-If OpenOCD hits SWD access errors (`DP initialisation failed`, target unknown, etc.), run a manual recover:
+If OpenOCD hits SWD access errors (`DP initialisation failed`, target unknown, etc.), the uploader now attempts the same pyOCD CTRL-AP recovery flow used by the clean core and retries automatically. Manual recovery is still available if needed:
 
 ```bash
 pyocd erase -t nrf54l --mass -v
@@ -230,9 +231,23 @@ python3 tools/get_toolchain.py
   - `SPILoopback` (D10 MOSI -> D9 MISO loopback)
   - `RadioProfileInfo` (shows selected radio/antenna/TX power build settings)
 - RF switch example: `examples/04.Radio/AntennaControl`
+- Clean-core parity examples copied into this core: `examples/06.Clean-Core-Parity`
+  - `Basics/CoreVersionProbe`
+  - `Peripherals/InterruptPwmApiProbe`
+  - `Peripherals/PeripheralProbe`
+  - `Peripherals/RuntimePeripheralPinRemap`
+  - `Peripherals/VbatReadViaAnalogRead`
+  - `Peripherals/WireImuRemapScanner`
+  - `Peripherals/WireRepeatedStartProbe`
+  - `Peripherals/WireTargetResponder`
+  - `Peripherals/XiaoBoardControlPins`
+  - `Power/DelayAutoLowPowerMeasure`
+  - `Power/SystemOffWakeDiag`
+  - `Power/SystemOffWakeOnceDiag`
 - Additional generic core examples: `examples/01.Basics`, `examples/02.Analog`, `examples/03.Communication`
 - Library examples:
   - Bluetooth: `libraries/Bluetooth/examples/BLEAdvertise`, `libraries/Bluetooth/examples/BLEScan`
+  - Nrf54L15-Clean-Implementation: `libraries/Nrf54L15-Clean-Implementation/examples/Board`, `libraries/Nrf54L15-Clean-Implementation/examples/Diagnostics`, `libraries/Nrf54L15-Clean-Implementation/examples/LowPower`, `libraries/Nrf54L15-Clean-Implementation/examples/Peripherals`
   - Wire: `libraries/Wire/examples/I2CScanner`
   - Zigbee: `libraries/Zigbee/examples/ZigbeeScan`, `libraries/Zigbee/examples/ZigbeeRadioConfig`
   - HPFMSPI: `libraries/HPFMSPI/examples/HPFMSPIInfo`
@@ -243,3 +258,6 @@ Notes:
 - `Zigbee` library currently wraps Zephyr IEEE 802.15.4 management APIs (scan/channel/PAN/address/TX power). Full OpenThread/Zigbee stack APIs are still outside this Arduino wrapper layer.
 - `Wire` now includes Arduino-style slave callbacks (`begin(address)`, `onReceive`, `onRequest`) via Zephyr I2C target API; runtime support depends on the active low-level I2C backend.
 - `HPF-mspi` workflow is experimental and controlled by `Tools -> HPF MSPI`.
+- `Nrf54L15-Clean-Implementation` now includes the clean-core board, low-power, diagnostics, and next peripherals parity tranches. Verified sketches in the current parity passes include `AarResolvePrivateAddress`, `CcmBlePacketTamperDetect`, `CcmBleSpecVector`, `CompThresholdMonitor`, `CracenRandomBytes`, `CracenSeedArduinoRandom`, `DppicHardwareBlink`, `EcbAesKnownVector`, `GrtcCompareAlarmTicker`, `GrtcUptimeClock`, `LpcompSystemOffWake`, and `SaadcDifferentialProbe`.
+- The current Zephyr-safe clean shims cover SPI/TWI/UART/ADC/timer/PWM/GPIOTE/PDM plus software-backed RNG/AAR/ECB/CCM, a pragmatic BLE advertising wrapper, and the `Grtc` compatibility layer used by the new peripheral examples.
+- `DppicHardwareBlink` falls back to timer-driven software toggling on this Zephyr shim because the clean-core-style publish/subscribe register plumbing is not yet exposed through the compatibility layer.

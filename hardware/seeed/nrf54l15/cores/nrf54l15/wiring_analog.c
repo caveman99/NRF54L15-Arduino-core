@@ -11,8 +11,11 @@ extern const uint8_t g_pwm_pins[];
 extern const struct pwm_dt_spec g_pwm_map[];
 extern const size_t g_pwm_map_size;
 
-static uint8_t g_analog_read_resolution = 12;
+// Keep Arduino compatibility default (0..1023) unless sketch overrides.
+static uint8_t g_analog_read_resolution = 10;
 static uint8_t g_analog_write_resolution = 8;
+static uint32_t g_analog_write_frequency_hz = 500U; // 2000us default period
+static uint32_t g_pwm_pin_frequency_hz[8] = {0U};
 
 static const struct pwm_dt_spec *findPwmSpec(uint8_t pin)
 {
@@ -23,6 +26,28 @@ static const struct pwm_dt_spec *findPwmSpec(uint8_t pin)
     }
 
     return NULL;
+}
+
+static int pwmIndexForPin(uint8_t pin)
+{
+    for (size_t i = 0; i < g_pwm_map_size; ++i) {
+        if (g_pwm_pins[i] == pin) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static uint32_t pwmPeriodUsForHz(uint32_t hz)
+{
+    if (hz == 0U) {
+        hz = 500U;
+    }
+    if (hz > 1000000U) {
+        hz = 1000000U;
+    }
+    uint32_t period_us = 1000000U / hz;
+    return (period_us == 0U) ? 1U : period_us;
 }
 
 void analogReference(uint8_t mode)
@@ -38,6 +63,21 @@ void analogReadResolution(uint8_t bits)
 void analogWriteResolution(uint8_t bits)
 {
     g_analog_write_resolution = constrain(bits, 1, 16);
+}
+
+void analogWriteFrequency(uint32_t hz)
+{
+    g_analog_write_frequency_hz = (hz == 0U) ? 500U : hz;
+}
+
+void analogWritePinFrequency(uint8_t pin, uint32_t hz)
+{
+    const int idx = pwmIndexForPin(pin);
+    if (idx < 0 || (size_t)idx >= ARRAY_SIZE(g_pwm_pin_frequency_hz)) {
+        return;
+    }
+
+    g_pwm_pin_frequency_hz[idx] = hz;
 }
 
 int analogRead(uint8_t pin)
@@ -81,6 +121,7 @@ int analogRead(uint8_t pin)
 
 void analogWrite(uint8_t pin, int value)
 {
+    const int idx = pwmIndexForPin(pin);
     const struct pwm_dt_spec *spec = findPwmSpec(pin);
     if (spec == NULL || spec->dev == NULL || !device_is_ready(spec->dev)) {
         return;
@@ -89,7 +130,8 @@ void analogWrite(uint8_t pin, int value)
     int max_value = (1 << g_analog_write_resolution) - 1;
     int clamped = constrain(value, 0, max_value);
 
-    uint32_t period_us = 2000;
+    const uint32_t pin_hz = (idx >= 0 && (size_t)idx < ARRAY_SIZE(g_pwm_pin_frequency_hz)) ? g_pwm_pin_frequency_hz[idx] : 0U;
+    const uint32_t period_us = pwmPeriodUsForHz(pin_hz != 0U ? pin_hz : g_analog_write_frequency_hz);
     uint32_t pulse_us = (uint32_t)((uint64_t)clamped * period_us / max_value);
 
     (void)pwm_set_dt(spec, PWM_USEC(period_us), PWM_USEC(pulse_us));

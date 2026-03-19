@@ -96,6 +96,9 @@ xiao_nrf54l15.menu.upload_method.auto.upload.runner=auto
 xiao_nrf54l15.menu.upload_method.openocd=OpenOCD (CMSIS-DAP)
 xiao_nrf54l15.menu.upload_method.openocd.upload.runner=openocd
 
+xiao_nrf54l15.menu.upload_method.pyocd=pyOCD (CMSIS-DAP)
+xiao_nrf54l15.menu.upload_method.pyocd.upload.runner=pyocd
+
 xiao_nrf54l15.menu.upload_method.jlink=SEGGER J-Link
 xiao_nrf54l15.menu.upload_method.jlink.upload.runner=jlink
 

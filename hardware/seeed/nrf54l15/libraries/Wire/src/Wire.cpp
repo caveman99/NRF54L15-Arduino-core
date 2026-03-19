@@ -8,13 +8,21 @@
 #include <zephyr/sys/util.h>
 
 namespace {
-const struct device *resolveI2C()
+const struct device* resolveI2CForPins(uint8_t sda, uint8_t scl)
 {
 #if DT_NODE_HAS_STATUS(DT_ALIAS(xiao_i2c), okay)
-    return DEVICE_DT_GET(DT_ALIAS(xiao_i2c));
-#else
-    return nullptr;
+    if (sda == PIN_WIRE_SDA && scl == PIN_WIRE_SCL) {
+        return DEVICE_DT_GET(DT_ALIAS(xiao_i2c));
+    }
 #endif
+
+#if DT_NODE_HAS_STATUS(DT_ALIAS(xiao_i2c1), okay)
+    if (sda == PIN_WIRE1_SDA && scl == PIN_WIRE1_SCL) {
+        return DEVICE_DT_GET(DT_ALIAS(xiao_i2c1));
+    }
+#endif
+
+    return nullptr;
 }
 
 uint32_t speedFromClock(uint32_t clockHz)
@@ -31,55 +39,102 @@ uint32_t speedFromClock(uint32_t clockHz)
     return I2C_SPEED_SET(I2C_SPEED_STANDARD);
 }
 
-TwoWire *g_wireInstance = nullptr;
-struct i2c_target_config g_targetConfig = {};
+struct TargetSlot {
+    TwoWire* wire;
+    struct i2c_target_config config;
+};
 
-TwoWire *resolveWireFromTarget(struct i2c_target_config *config)
+TargetSlot g_targetSlots[2] = {};
+
+TargetSlot* allocateTargetSlot(TwoWire* wire)
 {
-    if (config != &g_targetConfig) {
+    for (size_t i = 0; i < ARRAY_SIZE(g_targetSlots); ++i) {
+        if (g_targetSlots[i].wire == wire) {
+            return &g_targetSlots[i];
+        }
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(g_targetSlots); ++i) {
+        if (g_targetSlots[i].wire == nullptr) {
+            g_targetSlots[i].wire = wire;
+            g_targetSlots[i].config = {};
+            return &g_targetSlots[i];
+        }
+    }
+
+    return nullptr;
+}
+
+TwoWire* resolveWireFromTarget(struct i2c_target_config* config)
+{
+    if (config == nullptr) {
         return nullptr;
     }
 
-    return g_wireInstance;
+    for (size_t i = 0; i < ARRAY_SIZE(g_targetSlots); ++i) {
+        if (&g_targetSlots[i].config == config) {
+            return g_targetSlots[i].wire;
+        }
+    }
+
+    return nullptr;
 }
 } // namespace
 
-TwoWire::TwoWire()
-    : _i2c(resolveI2C()),
+TwoWire::TwoWire(NRF_TWIM_Type* twim, uint8_t sda, uint8_t scl)
+    : _i2c(resolveI2CForPins(sda, scl)),
+      _twim(twim),
+      _sda(sda),
+      _scl(scl),
+      _frequency(400000U),
+      _initialized(false),
+      _txBufferLength(0),
       _txAddress(0),
-      _txLength(0),
-      _rxLength(0),
-      _rxIndex(0),
+      _rxBufferIndex(0),
+      _rxBufferLength(0),
+      _peek(-1),
       _targetTxLength(0),
       _targetTxIndex(0),
-      _peek(-1),
-      _clockHz(400000U),
       _targetAddress(0),
       _targetRegistered(false),
       _inOnRequestCallback(false),
       _targetDirection(TARGET_DIR_NONE),
       _onReceive(nullptr),
-      _onRequest(nullptr)
+      _onRequest(nullptr),
+      _pendingRepeatedStart(false)
 {
-    if (g_wireInstance == nullptr) {
-        g_wireInstance = this;
-    }
+    (void)allocateTargetSlot(this);
 }
 
 void TwoWire::begin()
 {
-    const struct device *dev = static_cast<const struct device *>(_i2c);
+    const struct device* dev = static_cast<const struct device*>(_i2c);
     if (dev == nullptr || !device_is_ready(dev)) {
         return;
     }
 
-    (void)i2c_configure(dev, I2C_MODE_CONTROLLER | speedFromClock(_clockHz));
+    if (_targetRegistered) {
+        TargetSlot* slot = allocateTargetSlot(this);
+        if (slot != nullptr) {
+            (void)i2c_target_unregister(dev, &slot->config);
+        }
+        _targetRegistered = false;
+        _targetDirection = TARGET_DIR_NONE;
+    }
+
+    (void)i2c_configure(dev, I2C_MODE_CONTROLLER | speedFromClock(_frequency));
+    _initialized = true;
 }
 
 void TwoWire::begin(uint8_t address)
 {
-    const struct device *dev = static_cast<const struct device *>(_i2c);
+    const struct device* dev = static_cast<const struct device*>(_i2c);
     if (dev == nullptr || !device_is_ready(dev)) {
+        return;
+    }
+
+    TargetSlot* slot = allocateTargetSlot(this);
+    if (slot == nullptr) {
         return;
     }
 
@@ -97,19 +152,19 @@ void TwoWire::begin(uint8_t address)
     };
 
     if (_targetRegistered) {
-        (void)i2c_target_unregister(dev, &g_targetConfig);
+        (void)i2c_target_unregister(dev, &slot->config);
         _targetRegistered = false;
     }
 
     clearReceiveState();
     clearTargetTxState();
 
-    g_targetConfig = {};
-    g_targetConfig.address = address;
-    g_targetConfig.flags = 0;
-    g_targetConfig.callbacks = &targetCallbacks;
+    slot->config = {};
+    slot->config.address = address;
+    slot->config.flags = 0;
+    slot->config.callbacks = &targetCallbacks;
 
-    int err = i2c_target_register(dev, &g_targetConfig);
+    int err = i2c_target_register(dev, &slot->config);
     if (err == 0) {
         _targetRegistered = true;
         _targetAddress = address;
@@ -117,31 +172,48 @@ void TwoWire::begin(uint8_t address)
     }
 }
 
+void TwoWire::begin(int address)
+{
+    if (address < 0 || address > 0x7F) {
+        return;
+    }
+    begin(static_cast<uint8_t>(address));
+}
+
 void TwoWire::end()
 {
-    const struct device *dev = static_cast<const struct device *>(_i2c);
-    if (_targetRegistered && dev != nullptr && device_is_ready(dev)) {
-        (void)i2c_target_unregister(dev, &g_targetConfig);
+    const struct device* dev = static_cast<const struct device*>(_i2c);
+    TargetSlot* slot = allocateTargetSlot(this);
+
+    if (_targetRegistered && dev != nullptr && device_is_ready(dev) && slot != nullptr) {
+        (void)i2c_target_unregister(dev, &slot->config);
     }
 
     _targetRegistered = false;
     _targetDirection = TARGET_DIR_NONE;
     _inOnRequestCallback = false;
+    _pendingRepeatedStart = false;
     clearControllerTxState();
     clearReceiveState();
     clearTargetTxState();
 }
 
-void TwoWire::setClock(uint32_t clockHz)
+void TwoWire::setClock(uint32_t freq)
 {
-    _clockHz = clockHz;
+    _frequency = freq;
     begin();
 }
 
 void TwoWire::beginTransmission(uint8_t address)
 {
     _txAddress = address;
+    _pendingRepeatedStart = false;
     clearControllerTxState();
+}
+
+void TwoWire::beginTransmission(int address)
+{
+    beginTransmission(static_cast<uint8_t>(address));
 }
 
 size_t TwoWire::write(uint8_t data)
@@ -155,87 +227,125 @@ size_t TwoWire::write(uint8_t data)
         return 1;
     }
 
-    if (_txLength >= sizeof(_txBuffer)) {
+    if (_txBufferLength >= sizeof(_txBuffer)) {
         return 0;
     }
 
-    _txBuffer[_txLength++] = data;
+    _txBuffer[_txBufferLength++] = data;
     return 1;
 }
 
-size_t TwoWire::write(const uint8_t *buffer, size_t size)
+size_t TwoWire::write(const uint8_t* data, size_t quantity)
 {
-    size_t written = 0;
-    if (buffer == nullptr) {
+    if (data == nullptr || quantity == 0) {
         return 0;
     }
 
+    size_t written = 0;
     if (isTargetWriteContext()) {
-        while (written < size && _targetTxLength < sizeof(_targetTxBuffer)) {
-            _targetTxBuffer[_targetTxLength++] = buffer[written++];
+        while (written < quantity && _targetTxLength < sizeof(_targetTxBuffer)) {
+            _targetTxBuffer[_targetTxLength++] = data[written++];
         }
         return written;
     }
 
-    while (written < size && _txLength < sizeof(_txBuffer)) {
-        _txBuffer[_txLength++] = buffer[written++];
+    while (written < quantity && _txBufferLength < sizeof(_txBuffer)) {
+        _txBuffer[_txBufferLength++] = data[written++];
     }
 
     return written;
 }
 
-int TwoWire::endTransmission(bool sendStop)
+uint8_t TwoWire::endTransmission(bool sendStop)
 {
-    ARG_UNUSED(sendStop);
-
-    const struct device *dev = static_cast<const struct device *>(_i2c);
+    const struct device* dev = static_cast<const struct device*>(_i2c);
     if (dev == nullptr || !device_is_ready(dev)) {
+        clearControllerTxState();
+        _pendingRepeatedStart = false;
         return 4;
     }
 
-    int err = i2c_write(dev, _txBuffer, _txLength, _txAddress);
+    if (!sendStop) {
+        _pendingRepeatedStart = true;
+        return 0;
+    }
+
+    int err = i2c_write(dev, _txBuffer, _txBufferLength, _txAddress);
     clearControllerTxState();
+    _pendingRepeatedStart = false;
 
     return (err == 0) ? 0 : 4;
 }
 
-uint8_t TwoWire::requestFrom(uint8_t address, uint8_t quantity, bool sendStop)
+uint8_t TwoWire::requestFrom(uint8_t address, uint8_t quantity, uint8_t sendStop)
+{
+    return requestFrom(address, static_cast<size_t>(quantity), sendStop != 0);
+}
+
+uint8_t TwoWire::requestFrom(uint8_t address, size_t quantity, bool sendStop)
 {
     ARG_UNUSED(sendStop);
 
-    const struct device *dev = static_cast<const struct device *>(_i2c);
-    if (dev == nullptr || !device_is_ready(dev)) {
+    const struct device* dev = static_cast<const struct device*>(_i2c);
+    if (dev == nullptr || !device_is_ready(dev) || quantity == 0) {
+        clearReceiveState();
+        clearControllerTxState();
+        _pendingRepeatedStart = false;
         return 0;
     }
 
     clearReceiveState();
-    _rxLength = quantity > sizeof(_rxBuffer) ? sizeof(_rxBuffer) : quantity;
+    _rxBufferLength = static_cast<uint8_t>(MIN(quantity, sizeof(_rxBuffer)));
 
-    int err = i2c_read(dev, _rxBuffer, _rxLength, address);
+    int err = 0;
+    if (_pendingRepeatedStart && _txBufferLength > 0 && _txAddress == address) {
+        err = i2c_write_read(dev, address, _txBuffer, _txBufferLength, _rxBuffer, _rxBufferLength);
+        clearControllerTxState();
+        _pendingRepeatedStart = false;
+    } else {
+        err = i2c_read(dev, _rxBuffer, _rxBufferLength, address);
+    }
+
     if (err != 0) {
         clearReceiveState();
     }
 
-    return static_cast<uint8_t>(_rxLength);
+    return _rxBufferLength;
 }
 
-int TwoWire::available()
+uint8_t TwoWire::requestFrom(int address, int quantity)
 {
-    const size_t remaining = (_rxIndex < _rxLength) ? (_rxLength - _rxIndex) : 0U;
+    return requestFrom(address, quantity, static_cast<uint8_t>(true));
+}
+
+uint8_t TwoWire::requestFrom(int address, int quantity, uint8_t sendStop)
+{
+    if (address < 0 || address > 0x7F || quantity <= 0) {
+        clearReceiveState();
+        clearControllerTxState();
+        _pendingRepeatedStart = false;
+        return 0;
+    }
+    return requestFrom(static_cast<uint8_t>(address), static_cast<size_t>(quantity), sendStop != 0);
+}
+
+int TwoWire::available(void)
+{
+    const uint8_t remaining = (_rxBufferIndex < _rxBufferLength) ? (_rxBufferLength - _rxBufferIndex) : 0U;
     return static_cast<int>(remaining + (_peek >= 0 ? 1U : 0U));
 }
 
-void TwoWire::onReceive(ReceiveCallback callback)
+void TwoWire::onReceive(void (*callback)(int))
 {
     _onReceive = callback;
 }
 
-void TwoWire::onRequest(RequestCallback callback)
+void TwoWire::onRequest(void (*callback)(void))
 {
     _onRequest = callback;
 }
 
-int TwoWire::read()
+int TwoWire::read(void)
 {
     if (_peek >= 0) {
         int value = _peek;
@@ -243,28 +353,28 @@ int TwoWire::read()
         return value;
     }
 
-    if (_rxIndex >= _rxLength) {
+    if (_rxBufferIndex >= _rxBufferLength) {
         return -1;
     }
 
-    return _rxBuffer[_rxIndex++];
+    return _rxBuffer[_rxBufferIndex++];
 }
 
-int TwoWire::peek()
+int TwoWire::peek(void)
 {
     if (_peek >= 0) {
         return _peek;
     }
 
-    if (_rxIndex >= _rxLength) {
+    if (_rxBufferIndex >= _rxBufferLength) {
         return -1;
     }
 
-    _peek = _rxBuffer[_rxIndex++];
+    _peek = _rxBuffer[_rxBufferIndex++];
     return _peek;
 }
 
-void TwoWire::flush()
+void TwoWire::flush(void)
 {
     clearControllerTxState();
     clearTargetTxState();
@@ -277,13 +387,13 @@ bool TwoWire::isTargetWriteContext() const
 
 void TwoWire::clearControllerTxState()
 {
-    _txLength = 0;
+    _txBufferLength = 0;
 }
 
 void TwoWire::clearReceiveState()
 {
-    _rxLength = 0;
-    _rxIndex = 0;
+    _rxBufferLength = 0;
+    _rxBufferIndex = 0;
     _peek = -1;
 }
 
@@ -293,7 +403,7 @@ void TwoWire::clearTargetTxState()
     _targetTxIndex = 0;
 }
 
-int TwoWire::provideTargetByte(uint8_t *value)
+int TwoWire::provideTargetByte(uint8_t* value)
 {
     if (value == nullptr) {
         return -EINVAL;
@@ -317,15 +427,15 @@ int TwoWire::handleTargetWriteRequested()
 
 int TwoWire::handleTargetWriteReceived(uint8_t value)
 {
-    if (_rxLength >= sizeof(_rxBuffer)) {
+    if (_rxBufferLength >= sizeof(_rxBuffer)) {
         return -ENOMEM;
     }
 
-    _rxBuffer[_rxLength++] = value;
+    _rxBuffer[_rxBufferLength++] = value;
     return 0;
 }
 
-int TwoWire::handleTargetReadRequested(uint8_t *value)
+int TwoWire::handleTargetReadRequested(uint8_t* value)
 {
     _targetDirection = TARGET_DIR_READ;
     clearTargetTxState();
@@ -339,7 +449,7 @@ int TwoWire::handleTargetReadRequested(uint8_t *value)
     return provideTargetByte(value);
 }
 
-int TwoWire::handleTargetReadProcessed(uint8_t *value)
+int TwoWire::handleTargetReadProcessed(uint8_t* value)
 {
     return provideTargetByte(value);
 }
@@ -347,9 +457,9 @@ int TwoWire::handleTargetReadProcessed(uint8_t *value)
 int TwoWire::handleTargetStop()
 {
     if (_targetDirection == TARGET_DIR_WRITE && _onReceive != nullptr) {
-        _rxIndex = 0;
+        _rxBufferIndex = 0;
         _peek = -1;
-        _onReceive(static_cast<int>(_rxLength));
+        _onReceive(static_cast<int>(_rxBufferLength));
     }
 
     _targetDirection = TARGET_DIR_NONE;
@@ -359,34 +469,35 @@ int TwoWire::handleTargetStop()
     return 0;
 }
 
-int TwoWire::targetWriteRequestedAdapter(struct i2c_target_config *config)
+int TwoWire::targetWriteRequestedAdapter(struct i2c_target_config* config)
 {
-    TwoWire *wire = resolveWireFromTarget(config);
+    TwoWire* wire = resolveWireFromTarget(config);
     return (wire != nullptr) ? wire->handleTargetWriteRequested() : -EINVAL;
 }
 
-int TwoWire::targetWriteReceivedAdapter(struct i2c_target_config *config, uint8_t value)
+int TwoWire::targetWriteReceivedAdapter(struct i2c_target_config* config, uint8_t value)
 {
-    TwoWire *wire = resolveWireFromTarget(config);
+    TwoWire* wire = resolveWireFromTarget(config);
     return (wire != nullptr) ? wire->handleTargetWriteReceived(value) : -EINVAL;
 }
 
-int TwoWire::targetReadRequestedAdapter(struct i2c_target_config *config, uint8_t *value)
+int TwoWire::targetReadRequestedAdapter(struct i2c_target_config* config, uint8_t* value)
 {
-    TwoWire *wire = resolveWireFromTarget(config);
+    TwoWire* wire = resolveWireFromTarget(config);
     return (wire != nullptr) ? wire->handleTargetReadRequested(value) : -EINVAL;
 }
 
-int TwoWire::targetReadProcessedAdapter(struct i2c_target_config *config, uint8_t *value)
+int TwoWire::targetReadProcessedAdapter(struct i2c_target_config* config, uint8_t* value)
 {
-    TwoWire *wire = resolveWireFromTarget(config);
+    TwoWire* wire = resolveWireFromTarget(config);
     return (wire != nullptr) ? wire->handleTargetReadProcessed(value) : -EINVAL;
 }
 
-int TwoWire::targetStopAdapter(struct i2c_target_config *config)
+int TwoWire::targetStopAdapter(struct i2c_target_config* config)
 {
-    TwoWire *wire = resolveWireFromTarget(config);
+    TwoWire* wire = resolveWireFromTarget(config);
     return (wire != nullptr) ? wire->handleTargetStop() : -EINVAL;
 }
 
-TwoWire Wire;
+TwoWire Wire(nullptr, PIN_WIRE_SDA, PIN_WIRE_SCL);
+TwoWire Wire1(nullptr, PIN_WIRE1_SDA, PIN_WIRE1_SCL);

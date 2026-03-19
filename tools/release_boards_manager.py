@@ -18,6 +18,8 @@ DEFAULT_EXCLUDES = [
     "tools/zephyr-sdk-*/**",
     "tools/zephyr-sdk-*.tar.*",
     "tools/host-tools/**",
+    "tools/hosttools_*.tar.*",
+    "tools/toolchain_*.tar.*",
     "tools/toolchain-bootstrap/**",
     "variants/*/zephyr_lib/**",
     "**/__pycache__/**",

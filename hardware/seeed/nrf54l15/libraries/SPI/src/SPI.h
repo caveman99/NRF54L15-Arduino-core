@@ -6,6 +6,8 @@
 
 #include <Arduino.h>
 
+#define SPI_HAS_TRANSACTION 1
+
 #define SPI_MODE0 0x00
 #define SPI_MODE1 0x01
 #define SPI_MODE2 0x02
@@ -32,14 +34,18 @@ class SPIClass {
 public:
     SPIClass();
 
-    void begin(uint8_t csPin = PIN_SPI_SS);
+    void begin();
+    void begin(uint8_t csPin);
+    bool setPins(int8_t sck, int8_t miso, int8_t mosi, int8_t ss = -1);
     void end();
 
     void beginTransaction(const SPISettings &settings);
     void endTransaction();
 
     uint8_t transfer(uint8_t data);
+    uint16_t transfer16(uint16_t data);
     void transfer(void *buffer, size_t length);
+    void transfer(const void *txBuffer, void *rxBuffer, size_t length);
 
 private:
     const void *_spi;
@@ -48,6 +54,10 @@ private:
     uint8_t _csPin;
     bool _hasCsPin;
     bool _inTransaction;
+    int8_t _sckPin;
+    int8_t _misoPin;
+    int8_t _mosiPin;
+    int8_t _preferredCsPin;
 };
 
 extern SPIClass SPI;

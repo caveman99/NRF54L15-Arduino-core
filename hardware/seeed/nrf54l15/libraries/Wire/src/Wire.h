@@ -1,36 +1,55 @@
-#ifndef Wire_h
-#define Wire_h
+/*
+ * TwoWire (I2C/TWI) Library for nRF54L15
+ *
+ * Zephyr-backed I2C controller + target implementation.
+ *
+ * Licensed under the Apache License 2.0
+ */
 
-#include <stddef.h>
-#include <stdint.h>
+#ifndef TwoWire_h
+#define TwoWire_h
+
+#include <Arduino.h>
+#include <nrf54l15.h>
 
 struct i2c_target_config;
 
-class TwoWire {
-public:
-    using ReceiveCallback = void (*)(int);
-    using RequestCallback = void (*)();
+#define BUFFER_LENGTH 32
 
-    TwoWire();
+class TwoWire : public Stream {
+public:
+    TwoWire(NRF_TWIM_Type* twim, uint8_t sda, uint8_t scl);
 
     void begin();
     void begin(uint8_t address);
+    void begin(int address);
     void end();
-    void setClock(uint32_t clockHz);
-    void onReceive(ReceiveCallback callback);
-    void onRequest(RequestCallback callback);
+    void setClock(uint32_t freq);
 
     void beginTransmission(uint8_t address);
+    void beginTransmission(int address);
+    uint8_t endTransmission(bool sendStop = true);
+
+    uint8_t requestFrom(uint8_t address, uint8_t quantity, uint8_t sendStop = true);
+    uint8_t requestFrom(uint8_t address, size_t quantity, bool sendStop = true);
+    uint8_t requestFrom(int address, int quantity);
+    uint8_t requestFrom(int address, int quantity, uint8_t sendStop);
+
+    int available(void);
+    int read(void);
+    int peek(void);
+
     size_t write(uint8_t data);
-    size_t write(const uint8_t *buffer, size_t size);
-    int endTransmission(bool sendStop = true);
+    size_t write(const uint8_t* data, size_t quantity);
+    void flush(void);
 
-    uint8_t requestFrom(uint8_t address, uint8_t quantity, bool sendStop = true);
+    // Target/slave callbacks (Arduino-compatible API)
+    void onReceive(void (*callback)(int));
+    void onRequest(void (*callback)(void));
 
-    int available();
-    int read();
-    int peek();
-    void flush();
+    uint8_t getTransmissionAddress() const { return _txAddress; }
+
+    using Print::write;
 
 private:
     enum TargetDirection : uint8_t {
@@ -39,44 +58,56 @@ private:
         TARGET_DIR_READ = 2,
     };
 
-    const void *_i2c;
+    const void* _i2c;
+    NRF_TWIM_Type* _twim;
+    uint8_t _sda;
+    uint8_t _scl;
+    uint32_t _frequency;
+    bool _initialized;
+
+    alignas(4) uint8_t _txBuffer[BUFFER_LENGTH];
+    uint8_t _txBufferLength;
     uint8_t _txAddress;
-    uint8_t _txBuffer[256];
-    uint8_t _rxBuffer[256];
-    uint8_t _targetTxBuffer[256];
-    size_t _txLength;
-    size_t _rxLength;
-    size_t _rxIndex;
-    size_t _targetTxLength;
-    size_t _targetTxIndex;
+
+    alignas(4) uint8_t _rxBuffer[BUFFER_LENGTH];
+    uint8_t _rxBufferIndex;
+    uint8_t _rxBufferLength;
     int _peek;
-    uint32_t _clockHz;
+
+    alignas(4) uint8_t _targetTxBuffer[BUFFER_LENGTH];
+    uint8_t _targetTxLength;
+    uint8_t _targetTxIndex;
     uint8_t _targetAddress;
     bool _targetRegistered;
     bool _inOnRequestCallback;
     TargetDirection _targetDirection;
-    ReceiveCallback _onReceive;
-    RequestCallback _onRequest;
+
+    void (*_onReceive)(int);
+    void (*_onRequest)(void);
+
+    bool _pendingRepeatedStart;
+
+    static int targetWriteRequestedAdapter(struct i2c_target_config* config);
+    static int targetWriteReceivedAdapter(struct i2c_target_config* config, uint8_t value);
+    static int targetReadRequestedAdapter(struct i2c_target_config* config, uint8_t* value);
+    static int targetReadProcessedAdapter(struct i2c_target_config* config, uint8_t* value);
+    static int targetStopAdapter(struct i2c_target_config* config);
 
     bool isTargetWriteContext() const;
     void clearControllerTxState();
     void clearReceiveState();
     void clearTargetTxState();
-    int provideTargetByte(uint8_t *value);
+    int provideTargetByte(uint8_t* value);
 
     int handleTargetWriteRequested();
     int handleTargetWriteReceived(uint8_t value);
-    int handleTargetReadRequested(uint8_t *value);
-    int handleTargetReadProcessed(uint8_t *value);
+    int handleTargetReadRequested(uint8_t* value);
+    int handleTargetReadProcessed(uint8_t* value);
     int handleTargetStop();
-
-    static int targetWriteRequestedAdapter(struct i2c_target_config *config);
-    static int targetWriteReceivedAdapter(struct i2c_target_config *config, uint8_t value);
-    static int targetReadRequestedAdapter(struct i2c_target_config *config, uint8_t *value);
-    static int targetReadProcessedAdapter(struct i2c_target_config *config, uint8_t *value);
-    static int targetStopAdapter(struct i2c_target_config *config);
 };
 
 extern TwoWire Wire;
+extern TwoWire Wire1;
 
-#endif
+#endif // TwoWire_h
+

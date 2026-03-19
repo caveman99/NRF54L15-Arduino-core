@@ -34,6 +34,45 @@ static bool isValidPin(uint8_t pin)
     return pin < g_pin_map_size;
 }
 
+static NRF_GPIO_Type *gpioForPort(uint8_t port)
+{
+    switch (port) {
+    case 0:
+        return NRF_P0;
+    case 1:
+        return NRF_P1;
+    case 2:
+        return NRF_P2;
+    default:
+        return NULL;
+    }
+}
+
+static void configurePinForInterrupt(uint8_t pin)
+{
+    uint8_t port = 0;
+    uint8_t pinInPort = 0;
+    if (!pinToPortPin(pin, &port, &pinInPort)) {
+        return;
+    }
+
+    NRF_GPIO_Type *gpio = gpioForPort(port);
+    if (gpio == NULL) {
+        return;
+    }
+
+    const uint32_t bit = BIT(pinInPort);
+    uint32_t cnf = gpio->PIN_CNF[pinInPort];
+    cnf &= ~(GPIO_PIN_CNF_DIR_Msk |
+             GPIO_PIN_CNF_INPUT_Msk |
+             GPIO_PIN_CNF_SENSE_Msk);
+    cnf |= (GPIO_PIN_CNF_DIR_Input << GPIO_PIN_CNF_DIR_Pos);
+    cnf |= GPIO_PIN_CNF_INPUT_Connect;
+    cnf |= GPIO_PIN_CNF_SENSE_Disabled;
+    gpio->DIRCLR = bit;
+    gpio->PIN_CNF[pinInPort] = cnf;
+}
+
 void pinMode(uint8_t pin, uint8_t mode)
 {
     if (!isValidPin(pin)) {
@@ -110,7 +149,7 @@ void attachInterrupt(uint8_t pin, void (*userFunc)(void), int mode)
 
     detachInterrupt(pin);
 
-    pinMode(pin, INPUT);
+    configurePinForInterrupt(pin);
 
     gpio_flags_t irq_flags = GPIO_INT_EDGE_BOTH;
     switch (mode) {

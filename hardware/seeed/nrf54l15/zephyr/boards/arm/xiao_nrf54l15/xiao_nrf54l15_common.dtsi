@@ -11,8 +11,23 @@
         };
     };
 
+    buttons {
+        compatible = "gpio-keys";
+
+        sw0: button_0 {
+            gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+            label = "User button";
+        };
+    };
+
     aliases {
         led0 = &led0;
+        sw0 = &sw0;
+
+        xiao_i2c = &i2c22;
+        xiao_i2c1 = &i2c30;
+        xiao_spi = &spi00;
+        xiao_serial = &uart21;
     };
 
     /* Xiao Connector Mappings */
@@ -26,22 +41,31 @@
             <1 0 &gpio1 5 0>,  /* D1 */
             <2 0 &gpio1 6 0>,  /* D2 */
             <3 0 &gpio1 7 0>,  /* D3 */
-            <4 0 &gpio1 8 0>,  /* D4 (SDA) */
-            <5 0 &gpio1 9 0>,  /* D5 (SCL) */
-            <6 0 &gpio2 1 0>,  /* D6 (TX) */
-            <7 0 &gpio2 2 0>,  /* D7 (RX) */
-            <8 0 &gpio2 3 0>,  /* D8 (SCK) */
+            <4 0 &gpio1 10 0>, /* D4 (SDA) */
+            <5 0 &gpio1 11 0>, /* D5 (SCL) */
+            <6 0 &gpio2 8 0>,  /* D6 (TX) */
+            <7 0 &gpio2 7 0>,  /* D7 (RX) */
+            <8 0 &gpio2 1 0>,  /* D8 (SCK) */
             <9 0 &gpio2 4 0>,  /* D9 (MISO) */
-            <10 0 &gpio2 5 0>; /* D10 (MOSI) */
+            <10 0 &gpio2 2 0>, /* D10 (MOSI) */
+            <11 0 &gpio0 3 0>, /* D11 (SCL1) */
+            <12 0 &gpio0 4 0>, /* D12 (SDA1) */
+            <13 0 &gpio2 10 0>,/* D13 */
+            <14 0 &gpio2 9 0>, /* D14 */
+            <15 0 &gpio2 6 0>; /* D15 */
     };
     
     xiao_adc: xiao_adc_connector {
          compatible = "vnd,adc-header";
          io-channels = 
-            <&adc 0>, /* A0 (D0) */
-            <&adc 1>, /* A1 (D1) */
-            <&adc 2>, /* A2 (D2) */
-            <&adc 3>; /* A3 (D3) */
+            <&adc 0>, /* A0 */
+            <&adc 1>, /* A1 */
+            <&adc 2>, /* A2 */
+            <&adc 3>, /* A3 */
+            <&adc 4>, /* A4 */
+            <&adc 5>, /* A5 */
+            <&adc 6>, /* A6 */
+            <&adc 7>; /* A7 */
     };
 };
 
@@ -53,18 +77,109 @@
     pinctrl-names = "default", "sleep";
 };
 
+&uart21 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart21_default>;
+    pinctrl-1 = <&uart21_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+&i2c22 {
+    status = "okay";
+    pinctrl-0 = <&i2c22_default>;
+    pinctrl-1 = <&i2c22_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+&i2c30 {
+    status = "okay";
+    pinctrl-0 = <&i2c30_default>;
+    pinctrl-1 = <&i2c30_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+&spi00 {
+    status = "okay";
+    pinctrl-0 = <&spi00_default>;
+    pinctrl-1 = <&spi00_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
 &pinctrl {
     uart20_default: uart20_default {
         group1 {
-            psels = <NRF_PSEL(UART_TX, 2, 1)>,
-                    <NRF_PSEL(UART_RX, 2, 2)>;
+            psels = <NRF_PSEL(UART_TX, 1, 9)>,
+                    <NRF_PSEL(UART_RX, 1, 8)>;
         };
     };
 
     uart20_sleep: uart20_sleep {
         group1 {
-            psels = <NRF_PSEL(UART_TX, 2, 1)>,
-                    <NRF_PSEL(UART_RX, 2, 2)>;
+            psels = <NRF_PSEL(UART_TX, 1, 9)>,
+                    <NRF_PSEL(UART_RX, 1, 8)>;
+            low-power-enable;
+        };
+    };
+
+    uart21_default: uart21_default {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 2, 8)>,
+                    <NRF_PSEL(UART_RX, 2, 7)>;
+        };
+    };
+
+    uart21_sleep: uart21_sleep {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 2, 8)>,
+                    <NRF_PSEL(UART_RX, 2, 7)>;
+            low-power-enable;
+        };
+    };
+
+    i2c22_default: i2c22_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 10)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 11)>;
+        };
+    };
+
+    i2c22_sleep: i2c22_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 1, 10)>,
+                    <NRF_PSEL(TWIM_SCL, 1, 11)>;
+            low-power-enable;
+        };
+    };
+
+    i2c30_default: i2c30_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 4)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 3)>;
+        };
+    };
+
+    i2c30_sleep: i2c30_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 4)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 3)>;
+            low-power-enable;
+        };
+    };
+
+    spi00_default: spi00_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 2, 1)>,
+                    <NRF_PSEL(SPIM_MOSI, 2, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 2, 4)>;
+        };
+    };
+
+    spi00_sleep: spi00_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 2, 1)>,
+                    <NRF_PSEL(SPIM_MOSI, 2, 2)>,
+                    <NRF_PSEL(SPIM_MISO, 2, 4)>;
             low-power-enable;
         };
     };

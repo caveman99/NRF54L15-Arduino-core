@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -37,6 +38,157 @@ def parse_supported_runners(runners_file: Path) -> List[str]:
             runners.append(line.split("- ", 1)[1].strip())
 
     return runners if runners else ["openocd", "jlink", "nrfutil", "nrfjprog"]
+
+
+def print_result(result: subprocess.CompletedProcess[str]) -> None:
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="")
+
+
+def looks_like_locked_target(result: subprocess.CompletedProcess[str]) -> bool:
+    details = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+    indicators = (
+        "approtect",
+        "memory transfer fault",
+        "fault ack",
+        "failed to read memory",
+        "dp initialisation failed",
+        "ap write error",
+        "locked",
+        "no cores were discovered",
+    )
+    return any(token in details for token in indicators)
+
+
+def looks_like_nrf54l_mass_erase_timeout(result: subprocess.CompletedProcess[str]) -> bool:
+    details = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+    indicators = (
+        "mass erase timeout waiting for eraseallstatus",
+        "no cores were discovered",
+    )
+    return any(token in details for token in indicators)
+
+
+def append_uid(cmd: list[str], uid: str | None) -> list[str]:
+    if uid:
+        cmd.extend(["-u", uid])
+    return cmd
+
+
+def detect_pyocd_command() -> list[str] | None:
+    pyocd_exe = resolve_program(["pyocd", "pyocd.exe"])
+    if pyocd_exe:
+        return [pyocd_exe]
+
+    probe = subprocess.run(
+        [sys.executable, "-m", "pyocd", "--version"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if probe.returncode == 0:
+        return [sys.executable, "-m", "pyocd"]
+
+    return None
+
+
+def force_nrf54l_unlock_workaround(pyocd_cmd: list[str], uid: str | None) -> subprocess.CompletedProcess[str]:
+    print("OpenOCD indicates a protected/locked target; attempting pyOCD CTRL-AP unlock workaround...")
+
+    script_lines = [
+        "initdp",
+        "writeap 2 0x04 1",
+        "sleep 500",
+        "readap 2 0x08",
+        "sleep 500",
+        "readap 2 0x08",
+        "writeap 2 0x00 2",
+        "writeap 2 0x00 0",
+        "sleep 500",
+        "readap 2 0x08",
+        "readap 0 0x00",
+        "readap 1 0x00",
+    ]
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as script_file:
+        script_file.write("\n".join(script_lines))
+        script_path = script_file.name
+
+    try:
+        cmd = append_uid(
+            [*pyocd_cmd, "commander", "-N", "-O", "auto_unlock=false", "-x", script_path],
+            uid,
+        )
+        result = run(cmd, check=False, capture_output=True)
+        print_result(result)
+        return result
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+def pyocd_flash_hex(pyocd_cmd: list[str], hex_path: Path, uid: str | None) -> int:
+    target = "nrf54l"
+    connect_mode = "under-reset"
+
+    def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        result = run(cmd, check=False, capture_output=True)
+        print_result(result)
+        return result
+
+    print(f"Flashing {hex_path}")
+    print("Runner: pyocd")
+    print(f"Probe UID: {uid or 'auto-select'}")
+
+    load_cmd = append_uid(
+        [*pyocd_cmd, "load", "-W", "-t", target, "-M", connect_mode, str(hex_path), "--format", "hex"],
+        uid,
+    )
+    load_result = run_cmd(load_cmd)
+
+    if load_result.returncode != 0 and looks_like_locked_target(load_result):
+        erase_cmd = append_uid(
+            [*pyocd_cmd, "erase", "-W", "--chip", "-t", target, "-M", connect_mode],
+            uid,
+        )
+        erase_result = run_cmd(erase_cmd)
+        if erase_result.returncode == 0:
+            load_result = run_cmd(load_cmd)
+        elif looks_like_nrf54l_mass_erase_timeout(erase_result):
+            workaround = force_nrf54l_unlock_workaround(pyocd_cmd, uid)
+            if workaround.returncode == 0:
+                load_cmd_no_unlock = append_uid(
+                    [
+                        *pyocd_cmd,
+                        "load",
+                        "-W",
+                        "-t",
+                        target,
+                        "-M",
+                        connect_mode,
+                        "-O",
+                        "auto_unlock=false",
+                        str(hex_path),
+                        "--format",
+                        "hex",
+                    ],
+                    uid,
+                )
+                load_result = run_cmd(load_cmd_no_unlock)
+
+    if load_result.returncode != 0:
+        return load_result.returncode
+
+    reset_cmd = append_uid(
+        [*pyocd_cmd, "reset", "-W", "-t", target, "-M", connect_mode, "-O", "auto_unlock=false"],
+        uid,
+    )
+    reset_result = run_cmd(reset_cmd)
+    return 0 if reset_result.returncode == 0 else reset_result.returncode
 
 
 def has_nrfjprog_probe() -> bool:
@@ -114,6 +266,16 @@ def main() -> int:
         runner = default_runner(supported_runners, sdk_dir)
         print(f"Auto-selected upload runner: {runner}")
 
+    if runner == "pyocd":
+        pyocd_cmd = detect_pyocd_command()
+        if not pyocd_cmd:
+            raise RuntimeError("pyocd runner selected but pyocd is not available in PATH.")
+        dev_id = os.environ.get("ARDUINO_ZEPHYR_DEV_ID", "") or None
+        hex_path = build_dir / "zephyr" / "zephyr.hex"
+        if not hex_path.is_file():
+            raise RuntimeError(f"Missing Zephyr HEX output: {hex_path}")
+        return pyocd_flash_hex(pyocd_cmd, hex_path, dev_id)
+
     if runner not in supported_runners:
         raise RuntimeError(
             f"Runner '{runner}' is not supported by this build. Supported runners: {' '.join(supported_runners)}"
@@ -137,8 +299,31 @@ def main() -> int:
         print("Dry run command: " + " ".join([shlex_quote(x) for x in flash_cmd]))
         return 0
 
-    run(flash_cmd, cwd=ncs_dir, env=env, check=True)
-    return 0
+    result = run(flash_cmd, cwd=ncs_dir, env=env, check=False, capture_output=True)
+    print_result(result)
+    if result.returncode == 0:
+        return 0
+
+    # First-use boards can ship in a locked/debug-disabled state that causes OpenOCD
+    # to fail with "no cores discovered"/"failed to read memory"/DP init errors.
+    # If that happens, run the same pyOCD CTRL-AP workaround used by the clean core
+    # and retry once.
+    if runner == "openocd" and looks_like_locked_target(result):
+        pyocd_cmd = detect_pyocd_command()
+        if not pyocd_cmd:
+            print(
+                "HINT: Install pyocd (or select the pyOCD upload method) to recover locked nRF54L targets.",
+                file=sys.stderr,
+            )
+        else:
+            dev_id = os.environ.get("ARDUINO_ZEPHYR_DEV_ID", "") or None
+            workaround = force_nrf54l_unlock_workaround(pyocd_cmd, dev_id)
+            if workaround.returncode == 0:
+                retry = run(flash_cmd, cwd=ncs_dir, env=env, check=False, capture_output=True)
+                print_result(retry)
+                return retry.returncode
+
+    return result.returncode
 
 
 def shlex_quote(s: str) -> str:

@@ -1,5 +1,5 @@
 name=Seeed XIAO nRF54L15 Zephyr Core
-version=0.1.1
+version=0.1.7
 
 tools.python.cmd={runtime.platform.path}/tools/python_with_venv.sh
 tools.python.cmd.windows=py
@@ -22,12 +22,13 @@ compiler.size.cmd=arm-zephyr-eabi-size{compiler.exe.suffix}
 compiler.c.flags=@{build.variant.path}/zephyr_lib/cflags.rsp -DARDUINO=10819 -DARDUINO_ARCH_NRF54L15
 compiler.cpp.flags=@{build.variant.path}/zephyr_lib/cppflags.rsp -DARDUINO=10819 -DARDUINO_ARCH_NRF54L15
 compiler.S.flags=@{build.variant.path}/zephyr_lib/cflags.rsp -x assembler-with-cpp -DARDUINO=10819 -DARDUINO_ARCH_NRF54L15
-compiler.c.extra_flags=
-compiler.cpp.extra_flags=
-compiler.S.extra_flags=
+compiler.c.extra_flags=-include "{build.path}/generated/CoreVersionGenerated.h"
+compiler.cpp.extra_flags=-include "{build.path}/generated/CoreVersionGenerated.h"
+compiler.S.extra_flags=-include "{build.path}/generated/CoreVersionGenerated.h"
 compiler.ar.flags=rcs
 
-recipe.hooks.sketch.prebuild.1.pattern="{tools.python.cmd}" {tools.python.args} "{runtime.platform.path}/tools/build_zephyr_lib.py" --quiet --extra-conf "{build.zephyr_conf_radio}" --extra-conf "{build.zephyr_conf_bt_controller}" --extra-conf "{build.zephyr_conf_tx_power}" --extra-conf "{build.zephyr_conf_802154}" --extra-conf "{build.zephyr_conf_hpf}" --extra-dtc-overlay "{build.zephyr_dtc_overlay}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_bt_controller}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_hpf}"
+recipe.hooks.prebuild.1.pattern="{tools.python.cmd}" {tools.python.args} "{runtime.platform.path}/tools/build_zephyr_lib.py" --quiet --extra-conf "{build.zephyr_conf_radio}" --extra-conf "{build.zephyr_conf_bt_controller}" --extra-conf "{build.zephyr_conf_tx_power}" --extra-conf "{build.zephyr_conf_802154}" --extra-conf "{build.zephyr_conf_hpf}" --extra-dtc-overlay "{build.zephyr_dtc_overlay}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_bt_controller}" --extra-dtc-overlay "{build.zephyr_dtc_overlay_hpf}"
+recipe.hooks.prebuild.2.pattern="{tools.python.cmd}" {tools.python.args} "{runtime.platform.path}/tools/generate_core_version_header.py" --version "{version}" --out "{build.path}/generated/CoreVersionGenerated.h"
 
 recipe.c.o.pattern="{compiler.path}{compiler.c.cmd}" {compiler.c.flags} {compiler.c.extra_flags} {build.extra_flags} {build.rf_antenna_flags} {build.radio_profile_flags} {build.bt_controller_flags} {build.bt_tx_power_flags} {build.hpf_mspi_flags} {includes} "{source_file}" -c -o "{object_file}"
 recipe.cpp.o.pattern="{compiler.path}{compiler.cpp.cmd}" {compiler.cpp.flags} {compiler.cpp.extra_flags} {build.extra_flags} {build.rf_antenna_flags} {build.radio_profile_flags} {build.bt_controller_flags} {build.bt_tx_power_flags} {build.hpf_mspi_flags} {includes} "{source_file}" -c -o "{object_file}"

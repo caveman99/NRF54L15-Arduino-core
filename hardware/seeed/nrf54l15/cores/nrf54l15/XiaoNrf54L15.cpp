@@ -1,11 +1,11 @@
 #include "XiaoNrf54L15.h"
 
-extern "C" bool arduinoXiaoNrf54l15SetAntenna(uint8_t selection);
+extern "C" uint8_t arduinoXiaoNrf54l15SetAntenna(uint8_t selection);
 extern "C" uint8_t arduinoXiaoNrf54l15GetAntenna(void);
 
 bool XiaoNrf54L15Class::setAntenna(Antenna antenna)
 {
-    return arduinoXiaoNrf54l15SetAntenna(static_cast<uint8_t>(antenna));
+    return arduinoXiaoNrf54l15SetAntenna(static_cast<uint8_t>(antenna)) != 0U;
 }
 
 XiaoNrf54L15Class::Antenna XiaoNrf54L15Class::getAntenna() const

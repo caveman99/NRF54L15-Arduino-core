@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.7 - 2026-03-19
+
+- Added bundled clean-compat integration into the Seeed Zephyr core so
+  `#include <nrf54l15_hal.h>` works both from packaged examples and from user
+  sketches without relying on Arduino library auto-discovery.
+- Added the `Nrf54L15-Clean-Implementation` parity wrappers for DPPIC, COMP,
+  and LPCOMP plus the required register definitions for the Seeed Zephyr core.
+- Copied the next clean-core parity examples into the packaged Zephyr core:
+  `CompDifferentialProbe`, `CompThresholdMonitor`, `DppicHardwareBlink`, and
+  `LpcompSystemOffWake`.
+- Added a software fallback path inside `DppicHardwareBlink` so the example
+  still runs on the current Zephyr shim even though hardware publish/subscribe
+  routing is not exposed yet.
+- Updated parity documentation and release packaging so the copied clean-core
+  library examples compile directly from their installed Arduino IDE paths.
+
 ## 0.1.6 - 2026-03-03
 
 - Added missing Arduino compatibility macros and aliases in `Arduino.h`:
