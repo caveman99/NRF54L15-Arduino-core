@@ -418,10 +418,204 @@ void safeCopyString(const char* source, char* destination, size_t destinationSiz
   destination[destinationSize - 1U] = '\0';
 }
 
+enum class BleScanShimMode : uint8_t {
+  kPassive,
+  kActive,
+};
+
+struct BleScanShimContext {
+  BleScanShimMode mode;
+  bool ready;
+  bool done;
+  uint32_t deadlineMs;
+  uint32_t postAdvDeadlineMs;
+  BleAdvertisingChannel pseudoChannel;
+  BleScanPacket passivePacket;
+  uint8_t passivePayload[31];
+  BleActiveScanResult activeResult;
+};
+
+BleScanShimContext* g_bleScanContext = nullptr;
+
 constexpr size_t kBleMaxSerializedPayloadLen = 31U;
 constexpr size_t kBleMaxAdStructures = 16U;
 constexpr uint32_t kBleLegacyOneShotAdvInterval = 0x0020U;
 constexpr uint32_t kBleLegacyOneShotWindowMs = 40U;
+
+BleAdvertisingChannel bleAdvertisingChannelFromIndex(uint8_t index) {
+  switch (index % 3U) {
+    case 1U:
+      return BleAdvertisingChannel::k38;
+    case 2U:
+      return BleAdvertisingChannel::k39;
+    case 0U:
+    default:
+      return BleAdvertisingChannel::k37;
+  }
+}
+
+uint32_t bleScanWindowMsFromSpin(uint64_t spinLimit,
+                                 uint32_t minimumMs,
+                                 uint32_t maximumMs = 1500U) {
+  uint32_t windowMs = static_cast<uint32_t>(spinLimit / 10000ULL);
+  if (windowMs < minimumMs) {
+    windowMs = minimumMs;
+  }
+  if (windowMs > maximumMs) {
+    windowMs = maximumMs;
+  }
+  return windowMs;
+}
+
+uint8_t bleRawPduTypeFromGapType(uint8_t advType) {
+  switch (advType) {
+    case BT_GAP_ADV_TYPE_ADV_IND:
+      return static_cast<uint8_t>(BleAdvPduType::kAdvInd);
+    case BT_GAP_ADV_TYPE_ADV_DIRECT_IND:
+      return static_cast<uint8_t>(BleAdvPduType::kAdvDirectInd);
+    case BT_GAP_ADV_TYPE_ADV_SCAN_IND:
+      return static_cast<uint8_t>(BleAdvPduType::kAdvScanInd);
+    case BT_GAP_ADV_TYPE_ADV_NONCONN_IND:
+      return static_cast<uint8_t>(BleAdvPduType::kAdvNonConnInd);
+    case BT_GAP_ADV_TYPE_SCAN_RSP:
+      return static_cast<uint8_t>(BleAdvPduType::kScanRsp);
+    default:
+      return 0xFFU;
+  }
+}
+
+uint8_t blePduHeaderFromScanArgs(const bt_addr_le_t* address, uint8_t advType) {
+  if (address == nullptr) {
+    return 0U;
+  }
+
+  uint8_t header = bleRawPduTypeFromGapType(advType);
+  if (header == 0xFFU) {
+    header = 0U;
+  }
+  if (address->type == BT_ADDR_LE_RANDOM) {
+    header |= (1U << 6U);
+  }
+  return header;
+}
+
+uint8_t bleCopyPayloadWithAddress(uint8_t* destination,
+                                  size_t destinationSize,
+                                  const bt_addr_le_t* address,
+                                  const net_buf_simple* buffer) {
+  if (destination == nullptr || destinationSize == 0U) {
+    return 0U;
+  }
+
+  size_t used = 0U;
+  memset(destination, 0, destinationSize);
+
+  if (address != nullptr && destinationSize >= 6U) {
+    memcpy(destination, address->a.val, 6U);
+    used = 6U;
+  }
+
+  if (buffer != nullptr && buffer->len > 0U && used < destinationSize) {
+    const size_t remaining = destinationSize - used;
+    const size_t copyLen = (buffer->len < remaining) ? buffer->len : remaining;
+    memcpy(&destination[used], buffer->data, copyLen);
+    used += copyLen;
+  }
+
+  return static_cast<uint8_t>(used);
+}
+
+bool bleScanAddressMatches(const bt_addr_le_t* address,
+                           const uint8_t expected[6],
+                           bool expectedRandom) {
+  if (address == nullptr || expected == nullptr) {
+    return false;
+  }
+  if ((address->type == BT_ADDR_LE_RANDOM) != expectedRandom) {
+    return false;
+  }
+  return memcmp(address->a.val, expected, 6U) == 0;
+}
+
+void bleScanShimCallback(const bt_addr_le_t* address,
+                         int8_t rssi,
+                         uint8_t advType,
+                         net_buf_simple* buffer) {
+  BleScanShimContext* context = g_bleScanContext;
+  if (context == nullptr || address == nullptr || buffer == nullptr) {
+    return;
+  }
+
+  const uint8_t rawPduType = bleRawPduTypeFromGapType(advType);
+  if (rawPduType == 0xFFU) {
+    return;
+  }
+
+  if (context->mode == BleScanShimMode::kPassive) {
+    if (rawPduType == static_cast<uint8_t>(BleAdvPduType::kScanRsp)) {
+      return;
+    }
+    context->passivePacket.channel = context->pseudoChannel;
+    context->passivePacket.rssiDbm = rssi;
+    context->passivePacket.pduHeader = blePduHeaderFromScanArgs(address, advType);
+    context->passivePacket.length =
+        bleCopyPayloadWithAddress(context->passivePayload,
+                                  sizeof(context->passivePayload),
+                                  address,
+                                  buffer);
+    context->passivePacket.payload = context->passivePayload;
+    context->ready = true;
+    context->done = true;
+    return;
+  }
+
+  const bool isScanResponse =
+      (rawPduType == static_cast<uint8_t>(BleAdvPduType::kScanRsp));
+  if (!context->activeResult.scanResponseReceived &&
+      !context->activeResult.advPayloadLength) {
+    if (isScanResponse) {
+      return;
+    }
+
+    context->activeResult.channel = context->pseudoChannel;
+    context->activeResult.advRssiDbm = rssi;
+    context->activeResult.advHeader = blePduHeaderFromScanArgs(address, advType);
+    context->activeResult.advertiserAddressRandom =
+        (address->type == BT_ADDR_LE_RANDOM);
+    memcpy(context->activeResult.advertiserAddress, address->a.val, 6U);
+    context->activeResult.advPayloadLength =
+        bleCopyPayloadWithAddress(context->activeResult.advPayload,
+                                  sizeof(context->activeResult.advPayload),
+                                  address,
+                                  buffer);
+    context->ready = true;
+
+    if (rawPduType != static_cast<uint8_t>(BleAdvPduType::kAdvInd) &&
+        rawPduType != static_cast<uint8_t>(BleAdvPduType::kAdvScanInd)) {
+      context->done = true;
+    }
+    return;
+  }
+
+  if (!isScanResponse) {
+    return;
+  }
+  if (!bleScanAddressMatches(address,
+                             context->activeResult.advertiserAddress,
+                             context->activeResult.advertiserAddressRandom)) {
+    return;
+  }
+
+  context->activeResult.scanResponseReceived = true;
+  context->activeResult.scanRspRssiDbm = rssi;
+  context->activeResult.scanRspHeader = blePduHeaderFromScanArgs(address, advType);
+  context->activeResult.scanRspPayloadLength =
+      bleCopyPayloadWithAddress(context->activeResult.scanRspPayload,
+                                sizeof(context->activeResult.scanRspPayload),
+                                address,
+                                buffer);
+  context->done = true;
+}
 
 void extractBleLocalName(const uint8_t* payload,
                          size_t payloadLen,
@@ -4780,6 +4974,8 @@ BleRadio::BleRadio(uint32_t radioBase, uint32_t ficrBase)
       advertisingIdentityId_(BT_ID_DEFAULT),
       initialized_(false),
       address_{0},
+      scanCycleStartIndex_(0U),
+      passiveScanPayload_{0},
       advertisingData_{0},
       scanResponseData_{0},
       advertisingDataLen_(0U),
@@ -5072,6 +5268,130 @@ bool BleRadio::setGattBatteryLevel(uint8_t percent) {
   }
   const uint8_t value = batteryLevel_;
   return characteristic->writeValue(&value, sizeof(value));
+}
+
+bool BleRadio::scanCycle(BleScanPacket* packet, uint32_t perChannelSpinLimit) {
+  if (packet == nullptr) {
+    return false;
+  }
+  if (!initialized_ && !begin(txPowerDbm_)) {
+    return false;
+  }
+
+  memset(packet, 0, sizeof(*packet));
+  const BleAdvertisingChannel pseudoChannel =
+      bleAdvertisingChannelFromIndex(scanCycleStartIndex_);
+  scanCycleStartIndex_ = static_cast<uint8_t>((scanCycleStartIndex_ + 1U) % 3U);
+
+  BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
+  (void)bt_le_scan_stop();
+
+  BleScanShimContext context{};
+  context.mode = BleScanShimMode::kPassive;
+  context.ready = false;
+  context.done = false;
+  context.deadlineMs =
+      millis() + bleScanWindowMsFromSpin(static_cast<uint64_t>(perChannelSpinLimit) * 3ULL,
+                                         120U);
+  context.pseudoChannel = pseudoChannel;
+  context.passivePacket.channel = pseudoChannel;
+  context.passivePacket.payload = context.passivePayload;
+
+  bt_le_scan_param scanParam = BT_LE_SCAN_PARAM_INIT(
+      BT_LE_SCAN_TYPE_PASSIVE, 0U, BT_GAP_SCAN_FAST_INTERVAL, BT_GAP_SCAN_FAST_WINDOW);
+  g_bleScanContext = &context;
+  int err = bt_le_scan_start(&scanParam, bleScanShimCallback);
+  if (err == -EALREADY || err == -EBUSY) {
+    (void)bt_le_scan_stop();
+    delay(1);
+    err = bt_le_scan_start(&scanParam, bleScanShimCallback);
+  }
+  if (err != 0) {
+    g_bleScanContext = nullptr;
+    return false;
+  }
+
+  while (!context.done &&
+         static_cast<int32_t>(millis() - context.deadlineMs) < 0) {
+    delay(1);
+  }
+
+  (void)bt_le_scan_stop();
+  g_bleScanContext = nullptr;
+  if (!context.ready) {
+    return false;
+  }
+
+  memcpy(passiveScanPayload_, context.passivePayload, sizeof(passiveScanPayload_));
+  *packet = context.passivePacket;
+  packet->payload = passiveScanPayload_;
+  return true;
+}
+
+bool BleRadio::scanActiveCycle(BleActiveScanResult* result,
+                               uint32_t perChannelAdvListenSpinLimit,
+                               uint32_t scanRspListenSpinLimit) {
+  if (result == nullptr) {
+    return false;
+  }
+  if (!initialized_ && !begin(txPowerDbm_)) {
+    return false;
+  }
+
+  memset(result, 0, sizeof(*result));
+  const BleAdvertisingChannel pseudoChannel =
+      bleAdvertisingChannelFromIndex(scanCycleStartIndex_);
+  scanCycleStartIndex_ = static_cast<uint8_t>((scanCycleStartIndex_ + 1U) % 3U);
+
+  BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
+  (void)bt_le_scan_stop();
+
+  BleScanShimContext context{};
+  context.mode = BleScanShimMode::kActive;
+  context.ready = false;
+  context.done = false;
+  context.deadlineMs =
+      millis() + bleScanWindowMsFromSpin(
+                      static_cast<uint64_t>(perChannelAdvListenSpinLimit) * 3ULL, 120U);
+  context.postAdvDeadlineMs =
+      millis() + bleScanWindowMsFromSpin(scanRspListenSpinLimit, 30U, 250U);
+  context.pseudoChannel = pseudoChannel;
+  context.activeResult.channel = pseudoChannel;
+
+  bt_le_scan_param scanParam = BT_LE_SCAN_PARAM_INIT(
+      BT_LE_SCAN_TYPE_ACTIVE, 0U, BT_GAP_SCAN_FAST_INTERVAL, BT_GAP_SCAN_FAST_WINDOW);
+  g_bleScanContext = &context;
+  int err = bt_le_scan_start(&scanParam, bleScanShimCallback);
+  if (err == -EALREADY || err == -EBUSY) {
+    (void)bt_le_scan_stop();
+    delay(1);
+    err = bt_le_scan_start(&scanParam, bleScanShimCallback);
+  }
+  if (err != 0) {
+    g_bleScanContext = nullptr;
+    return false;
+  }
+
+  while (!context.done &&
+         static_cast<int32_t>(millis() - context.deadlineMs) < 0) {
+    if (context.ready &&
+        static_cast<int32_t>(millis() - context.postAdvDeadlineMs) >= 0) {
+      context.done = true;
+      break;
+    }
+    delay(1);
+  }
+
+  (void)bt_le_scan_stop();
+  g_bleScanContext = nullptr;
+  if (!context.ready) {
+    return false;
+  }
+
+  *result = context.activeResult;
+  return true;
 }
 
 bool BleRadio::ensureAdvertisingIdentity() {

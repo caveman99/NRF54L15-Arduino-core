@@ -1226,6 +1226,29 @@ enum class BleAdvertisingChannel : uint8_t {
   k39 = 39,
 };
 
+struct BleScanPacket {
+  BleAdvertisingChannel channel;
+  int8_t rssiDbm;
+  uint8_t pduHeader;
+  uint8_t length;
+  const uint8_t* payload;
+};
+
+struct BleActiveScanResult {
+  BleAdvertisingChannel channel;
+  int8_t advRssiDbm;
+  uint8_t advHeader;
+  uint8_t advPayloadLength;
+  bool advertiserAddressRandom;
+  uint8_t advertiserAddress[6];
+  uint8_t advPayload[31];
+  bool scanResponseReceived;
+  int8_t scanRspRssiDbm;
+  uint8_t scanRspHeader;
+  uint8_t scanRspPayloadLength;
+  uint8_t scanRspPayload[31];
+};
+
 struct BleAdvInteraction {
   BleAdvertisingChannel channel;
   bool receivedScanRequest;
@@ -1261,6 +1284,10 @@ class BleRadio {
   bool buildScanResponsePacket();
   bool setGattDeviceName(const char* name);
   bool setGattBatteryLevel(uint8_t percent);
+  bool scanCycle(BleScanPacket* packet, uint32_t perChannelSpinLimit = 300000UL);
+  bool scanActiveCycle(BleActiveScanResult* result,
+                       uint32_t perChannelAdvListenSpinLimit = 300000UL,
+                       uint32_t scanRspListenSpinLimit = 300000UL);
   bool advertiseEvent(uint32_t interChannelDelayUs = 350U,
                       uint32_t spinLimit = 600000UL);
   bool advertiseInteractEvent(BleAdvInteraction* interaction,
@@ -1287,6 +1314,8 @@ class BleRadio {
   uint8_t advertisingIdentityId_;
   bool initialized_;
   uint8_t address_[6];
+  uint8_t scanCycleStartIndex_;
+  uint8_t passiveScanPayload_[31];
   uint8_t advertisingData_[31];
   uint8_t scanResponseData_[31];
   size_t advertisingDataLen_;

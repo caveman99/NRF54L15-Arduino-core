@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.10 - 2026-03-20
+
+- Added the next clean-core BLE scanner parity tranche to the Seeed Zephyr
+  core, including `BleScanPacket`, `BleActiveScanResult`, `scanCycle()`, and
+  `scanActiveCycle()` compatibility shims on top of Zephyr host scanning.
+- Copied the clean-core BLE scanner examples into the packaged Zephyr core:
+  `BlePassiveScanner` and `BleActiveScanner`.
+- Verified the new scanner path on hardware with forced `pyocd` upload/reset:
+  `BlePassiveScanner` logs live advertisements, and `BleActiveScanner` captures
+  scan responses, including the host-side test advertiser name `X54-HOST`.
+
 ## 0.1.9 - 2026-03-20
 
 - Added the next clean-core BLE advertiser parity tranche to the Seeed Zephyr
