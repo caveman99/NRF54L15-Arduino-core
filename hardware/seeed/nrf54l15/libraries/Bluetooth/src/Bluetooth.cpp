@@ -24,6 +24,16 @@ BLEUuid::BLEUuid(const char* uuid) {
     }
     strncpy(_uuid_str, uuid, sizeof(_uuid_str) - 1);
     _uuid_str[sizeof(_uuid_str) - 1] = '\0';
+
+    if (strlen(uuid) <= 4) {
+        unsigned int uuid16 = 0;
+        if (sscanf(uuid, "%4x", &uuid16) == 1) {
+            _uuid128[0] = uuid16 & 0xFF;
+            _uuid128[1] = (uuid16 >> 8) & 0xFF;
+        }
+        _is16bit = true;
+        return;
+    }
     
     int i = 0, j = 15;
     while (uuid[i] && j >= 0) {
@@ -36,7 +46,7 @@ BLEUuid::BLEUuid(const char* uuid) {
             break;
         }
     }
-    _is16bit = (strlen(uuid) <= 4);
+    _is16bit = false;
 }
 
 BLEUuid::BLEUuid(uint16_t uuid16) {
@@ -54,7 +64,9 @@ uint16_t BLEUuid::uuid16() const {
 // --- BLECharacteristic Implementation ---
 
 BLECharacteristic::BLECharacteristic(const char* uuid, uint8_t properties, size_t valueSize)
-    : _uuid(uuid), _properties(properties), _valueSize(valueSize), _valueLength(0), _onWrite(nullptr), _zephyr_attr(nullptr) {
+    : _uuid(uuid), _properties(properties), _valueSize(valueSize), _valueLength(0), _onWrite(nullptr),
+      _userContext(nullptr), _lastWriteOffset(0), _lastWriteLength(0), _lastWriteWithResponse(false),
+      _zephyr_attr(nullptr), _zephyr_cccd_attr(nullptr) {
     _value = (uint8_t*)malloc(valueSize);
     memset(_value, 0, valueSize);
 }
@@ -77,7 +89,7 @@ void BLECharacteristic::setEventHandler(void (*callback)(BLECharacteristic&)) {
 // --- BLEService Implementation ---
 
 BLEService::BLEService(const char* uuid)
-    : _uuid(uuid), _numCharacteristics(0), _zephyr_svc(nullptr) {
+    : _uuid(uuid), _numCharacteristics(0), _registerError(0), _zephyr_svc(nullptr) {
 }
 
 void BLEService::addCharacteristic(BLECharacteristic& characteristic) {
@@ -170,17 +182,57 @@ ssize_t read_chr(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 ssize_t write_chr(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                   const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
+    ARG_UNUSED(conn);
     BLECharacteristic *chr = (BLECharacteristic *)attr->user_data;
     if (offset + len > chr->_valueSize) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
     memcpy(chr->_value + offset, buf, len);
     chr->_valueLength = offset + len;
+    chr->_lastWriteOffset = offset;
+    chr->_lastWriteLength = len;
+    chr->_lastWriteWithResponse = ((flags & BT_GATT_WRITE_FLAG_CMD) == 0U);
     
     if (chr->_onWrite) {
         chr->_onWrite(*chr);
     }
     return len;
+}
+
+void cleanupZephyrService(BLEService& service)
+{
+    struct bt_gatt_service *zephyr_svc =
+        static_cast<struct bt_gatt_service *>(service._zephyr_svc);
+    if (zephyr_svc == nullptr) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < service._numCharacteristics; ++i) {
+        BLECharacteristic* chr = service._characteristics[i];
+        if (chr != nullptr) {
+            chr->_zephyr_attr = nullptr;
+            chr->_zephyr_cccd_attr = nullptr;
+        }
+    }
+
+    for (size_t i = 0; i < zephyr_svc->attr_count; ++i) {
+        const struct bt_gatt_attr* attr = &zephyr_svc->attrs[i];
+        if (attr->uuid == BT_UUID_GATT_PRIMARY) {
+            free(attr->user_data);
+        } else if (attr->uuid == BT_UUID_GATT_CHRC) {
+            struct bt_gatt_chrc* chrc = static_cast<struct bt_gatt_chrc*>(attr->user_data);
+            if (chrc != nullptr) {
+                free(const_cast<struct bt_uuid*>(chrc->uuid));
+            }
+            free(chrc);
+        } else if (attr->uuid == BT_UUID_GATT_CCC) {
+            free(attr->user_data);
+        }
+    }
+
+    free(zephyr_svc->attrs);
+    free(zephyr_svc);
+    service._zephyr_svc = nullptr;
 }
 
 } // namespace
@@ -227,6 +279,12 @@ bool BluetoothClass::setLocalName(const char* name) {
 }
 
 void BluetoothClass::addService(BLEService& service) {
+    service._registerError = 0;
+    if (service._zephyr_svc != nullptr) {
+        _lastError = 0;
+        return;
+    }
+
     size_t attr_count = 1; 
     for (uint8_t i = 0; i < service._numCharacteristics; i++) {
         BLECharacteristic* chr = service._characteristics[i];
@@ -236,17 +294,25 @@ void BluetoothClass::addService(BLEService& service) {
         }
     }
 
-    struct bt_gatt_attr *attrs = (struct bt_gatt_attr*)malloc(sizeof(struct bt_gatt_attr) * attr_count);
+    struct bt_gatt_attr *attrs =
+        static_cast<struct bt_gatt_attr *>(calloc(attr_count, sizeof(struct bt_gatt_attr)));
+    if (attrs == nullptr) {
+        _lastError = -ENOMEM;
+        service._registerError = -ENOMEM;
+        return;
+    }
     size_t ai = 0;
 
     struct bt_uuid *svc_uuid;
     if (service._uuid._is16bit) {
-        struct bt_uuid_16 *u16 = (struct bt_uuid_16*)malloc(sizeof(struct bt_uuid_16));
+        struct bt_uuid_16 *u16 =
+            static_cast<struct bt_uuid_16 *>(calloc(1, sizeof(struct bt_uuid_16)));
         u16->uuid.type = BT_UUID_TYPE_16;
         u16->val = service._uuid.uuid16();
         svc_uuid = (struct bt_uuid *)u16;
     } else {
-        struct bt_uuid_128 *u128 = (struct bt_uuid_128*)malloc(sizeof(struct bt_uuid_128));
+        struct bt_uuid_128 *u128 =
+            static_cast<struct bt_uuid_128 *>(calloc(1, sizeof(struct bt_uuid_128)));
         u128->uuid.type = BT_UUID_TYPE_128;
         memcpy(u128->val, service._uuid.data(), 16);
         svc_uuid = (struct bt_uuid *)u128;
@@ -263,12 +329,14 @@ void BluetoothClass::addService(BLEService& service) {
         BLECharacteristic* chr = service._characteristics[i];
         struct bt_uuid *chr_uuid;
         if (chr->_uuid._is16bit) {
-            struct bt_uuid_16 *u16 = (struct bt_uuid_16*)malloc(sizeof(struct bt_uuid_16));
+            struct bt_uuid_16 *u16 =
+                static_cast<struct bt_uuid_16 *>(calloc(1, sizeof(struct bt_uuid_16)));
             u16->uuid.type = BT_UUID_TYPE_16;
             u16->val = chr->_uuid.uuid16();
             chr_uuid = (struct bt_uuid *)u16;
         } else {
-            struct bt_uuid_128 *u128 = (struct bt_uuid_128*)malloc(sizeof(struct bt_uuid_128));
+            struct bt_uuid_128 *u128 =
+                static_cast<struct bt_uuid_128 *>(calloc(1, sizeof(struct bt_uuid_128)));
             u128->uuid.type = BT_UUID_TYPE_128;
             memcpy(u128->val, chr->_uuid.data(), 16);
             chr_uuid = (struct bt_uuid *)u128;
@@ -292,7 +360,8 @@ void BluetoothClass::addService(BLEService& service) {
             props |= BT_GATT_CHRC_NOTIFY;
         }
 
-        struct bt_gatt_chrc *chrc_data = (struct bt_gatt_chrc*)malloc(sizeof(struct bt_gatt_chrc));
+        struct bt_gatt_chrc *chrc_data =
+            static_cast<struct bt_gatt_chrc *>(calloc(1, sizeof(struct bt_gatt_chrc)));
         chrc_data->uuid = chr_uuid;
         chrc_data->value_handle = 0;
         chrc_data->properties = props;
@@ -310,29 +379,90 @@ void BluetoothClass::addService(BLEService& service) {
         attrs[ai].write = (props & (BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP)) ? write_chr : NULL;
         attrs[ai].user_data = chr;
         chr->_zephyr_attr = &attrs[ai];
+        chr->_zephyr_cccd_attr = nullptr;
         ai++;
 
         if (chr->_properties & BLECharacteristic::BLENotify) {
-            struct _bt_gatt_ccc *ccc_data = (struct _bt_gatt_ccc*)malloc(sizeof(struct _bt_gatt_ccc));
-            memset(ccc_data, 0, sizeof(*ccc_data));
+            struct bt_gatt_ccc_managed_user_data *ccc_data =
+                static_cast<struct bt_gatt_ccc_managed_user_data *>(
+                    calloc(1, sizeof(struct bt_gatt_ccc_managed_user_data)));
             attrs[ai].uuid = BT_UUID_GATT_CCC;
             attrs[ai].perm = BT_GATT_PERM_READ | BT_GATT_PERM_WRITE;
             attrs[ai].read = bt_gatt_attr_read_ccc;
             attrs[ai].write = bt_gatt_attr_write_ccc;
             attrs[ai].user_data = ccc_data;
+            chr->_zephyr_cccd_attr = &attrs[ai];
             ai++;
         }
     }
 
-    struct bt_gatt_service *zephyr_svc = (struct bt_gatt_service*)malloc(sizeof(struct bt_gatt_service));
+    struct bt_gatt_service *zephyr_svc =
+        static_cast<struct bt_gatt_service *>(calloc(1, sizeof(struct bt_gatt_service)));
     zephyr_svc->attrs = attrs;
     zephyr_svc->attr_count = ai;
     
-    bt_gatt_service_register(zephyr_svc);
+    const int err = bt_gatt_service_register(zephyr_svc);
+    if (err != 0) {
+        _lastError = err;
+        service._registerError = err;
+        service._zephyr_svc = zephyr_svc;
+        cleanupZephyrService(service);
+        return;
+    }
+
+    for (size_t i = 0; i + 1 < ai; ++i) {
+        if (zephyr_svc->attrs[i].uuid != BT_UUID_GATT_CHRC) {
+            continue;
+        }
+        struct bt_gatt_chrc* chrc =
+            static_cast<struct bt_gatt_chrc*>(zephyr_svc->attrs[i].user_data);
+        if (chrc != nullptr) {
+            chrc->value_handle = bt_gatt_attr_get_handle(&zephyr_svc->attrs[i + 1]);
+        }
+    }
+
     service._zephyr_svc = zephyr_svc;
     if (_numServices < 8) {
         _services[_numServices++] = &service;
     }
+    _lastError = 0;
+}
+
+bool BluetoothClass::removeService(BLEService& service) {
+    struct bt_gatt_service *zephyr_svc =
+        static_cast<struct bt_gatt_service *>(service._zephyr_svc);
+    if (zephyr_svc == nullptr) {
+        return true;
+    }
+
+    const int err = bt_gatt_service_unregister(zephyr_svc);
+    if (err != 0) {
+        _lastError = err;
+        service._registerError = err;
+        return false;
+    }
+
+    cleanupZephyrService(service);
+    service._registerError = 0;
+
+    for (uint8_t i = 0; i < _numServices; ++i) {
+        if (_services[i] != &service) {
+            continue;
+        }
+        for (uint8_t j = i + 1; j < _numServices; ++j) {
+            _services[j - 1] = _services[j];
+        }
+        --_numServices;
+        _services[_numServices] = nullptr;
+        break;
+    }
+
+    if (_advertisedService == &service) {
+        _advertisedService = nullptr;
+    }
+
+    _lastError = 0;
+    return true;
 }
 
 bool BluetoothClass::setAdvertisedService(BLEService& service) {

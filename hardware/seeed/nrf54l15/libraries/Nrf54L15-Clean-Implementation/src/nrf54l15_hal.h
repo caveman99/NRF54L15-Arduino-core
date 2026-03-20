@@ -6,6 +6,9 @@
 #include "nrf54l15_regs.h"
 #include "xiao_nrf54l15_pins.h"
 
+class BLEService;
+class BLECharacteristic;
+
 namespace xiao_nrf54l15 {
 
 enum class CpuFrequency : uint32_t {
@@ -1226,6 +1229,14 @@ enum class BleAdvertisingChannel : uint8_t {
   k39 = 39,
 };
 
+enum BleGattCharacteristicProperty : uint8_t {
+  kBleGattPropRead = 0x02U,
+  kBleGattPropWriteNoRsp = 0x04U,
+  kBleGattPropWrite = 0x08U,
+  kBleGattPropNotify = 0x10U,
+  kBleGattPropIndicate = 0x20U,
+};
+
 struct BleScanPacket {
   BleAdvertisingChannel channel;
   int8_t rssiDbm;
@@ -1307,8 +1318,17 @@ struct BleConnectionEvent {
   const uint8_t* txPayload;
 };
 
+using BleGattWriteCallback = void (*)(uint16_t valueHandle, const uint8_t* value,
+                                      uint8_t valueLength, bool withResponse,
+                                      void* context);
+
 class BleRadio {
  public:
+  static constexpr uint8_t kCustomGattMaxServices = 4U;
+  static constexpr uint8_t kCustomGattMaxCharacteristics = 8U;
+  static constexpr uint8_t kCustomGattMaxValueLength = 20U;
+  static constexpr uint8_t kCustomGattUuid128Length = 16U;
+
   explicit BleRadio(uint32_t radioBase = 0U, uint32_t ficrBase = 0U);
 
   bool begin(int8_t txPowerDbm = -8);
@@ -1331,6 +1351,41 @@ class BleRadio {
   bool buildScanResponsePacket();
   bool setGattDeviceName(const char* name);
   bool setGattBatteryLevel(uint8_t percent);
+  bool clearCustomGatt();
+  bool addCustomGattService(uint16_t uuid16,
+                            uint16_t* outServiceHandle = nullptr);
+  bool addCustomGattService128(
+      const uint8_t uuid128[kCustomGattUuid128Length],
+      uint16_t* outServiceHandle = nullptr);
+  bool addCustomGattCharacteristic(uint16_t serviceHandle, uint16_t uuid16,
+                                   uint8_t properties,
+                                   const uint8_t* initialValue = nullptr,
+                                   uint8_t initialValueLength = 0U,
+                                   uint16_t* outValueHandle = nullptr,
+                                   uint16_t* outCccdHandle = nullptr);
+  bool addCustomGattCharacteristic128(
+      uint16_t serviceHandle,
+      const uint8_t uuid128[kCustomGattUuid128Length],
+      uint8_t properties,
+      const uint8_t* initialValue = nullptr,
+      uint8_t initialValueLength = 0U,
+      uint16_t* outValueHandle = nullptr,
+      uint16_t* outCccdHandle = nullptr);
+  bool setCustomGattCharacteristicValue(uint16_t valueHandle,
+                                        const uint8_t* value,
+                                        uint8_t valueLength);
+  bool getCustomGattCharacteristicValue(uint16_t valueHandle,
+                                        uint8_t* outValue,
+                                        uint8_t* inOutValueLength) const;
+  bool notifyCustomGattCharacteristic(uint16_t valueHandle,
+                                      bool indicate = false);
+  bool isCustomGattCccdEnabled(uint16_t valueHandle,
+                               bool indication = false) const;
+  bool setCustomGattWriteHandler(uint16_t valueHandle,
+                                 BleGattWriteCallback callback,
+                                 void* context = nullptr);
+  void setCustomGattWriteCallback(BleGattWriteCallback callback,
+                                  void* context = nullptr);
   bool isConnected() const;
   bool isConnectionEncrypted() const;
   bool getConnectionInfo(BleConnectionInfo* info) const;
@@ -1348,6 +1403,44 @@ class BleRadio {
                            uint32_t spinLimit = 450000UL);
 
  private:
+  static constexpr uint16_t kCustomGattHandleStart = 0x0020U;
+  static constexpr uint16_t kCustomGattHandleEnd = 0x00FFU;
+
+  struct BleCustomServiceState {
+    uint16_t serviceHandle;
+    uint16_t endHandle;
+    uint8_t firstCharacteristicIndex;
+    uint8_t characteristicCount;
+    bool registered;
+    char uuidString[37];
+    BLEService* service;
+  };
+
+  struct BleCustomCharacteristicState {
+    BleRadio* owner;
+    uint16_t serviceHandle;
+    uint8_t properties;
+    uint16_t declarationHandle;
+    uint16_t valueHandle;
+    uint16_t cccdHandle;
+    uint8_t valueLength;
+    uint8_t value[kCustomGattMaxValueLength];
+    char uuidString[37];
+    BleGattWriteCallback writeHandler;
+    void* writeContext;
+    BLECharacteristic* characteristic;
+  };
+
+  static void onCustomGattCharacteristicWritten(BLECharacteristic& characteristic);
+  bool ensureCustomGattRegistered();
+  bool finalizePendingCustomGattService();
+  BleCustomServiceState* findCustomGattService(uint16_t serviceHandle);
+  const BleCustomServiceState* findCustomGattService(uint16_t serviceHandle) const;
+  BleCustomCharacteristicState* findCustomGattCharacteristic(uint16_t valueHandle);
+  const BleCustomCharacteristicState* findCustomGattCharacteristic(
+      uint16_t valueHandle) const;
+  void handleCustomGattWrite(BleCustomCharacteristicState* characteristicState,
+                             bool withResponse);
   bool ensureAdvertisingIdentity();
   bool ensureBatteryService();
   const char* effectiveLocalName() const;
@@ -1378,6 +1471,15 @@ class BleRadio {
   void* batteryService_;
   void* batteryLevelCharacteristic_;
   bool batteryServiceAdded_;
+  uint16_t nextCustomGattHandle_;
+  int8_t pendingCustomGattServiceIndex_;
+  uint8_t customGattServiceCount_;
+  uint8_t customGattCharacteristicCount_;
+  BleGattWriteCallback customGattWriteCallback_;
+  void* customGattWriteContext_;
+  BleCustomServiceState customGattServices_[kCustomGattMaxServices];
+  BleCustomCharacteristicState
+      customGattCharacteristics_[kCustomGattMaxCharacteristics];
 };
 
 }  // namespace xiao_nrf54l15

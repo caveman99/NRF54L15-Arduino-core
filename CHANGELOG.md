@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.12 - 2026-03-20
+
+- Added the clean-core custom GATT and Nordic UART parity tranche to the
+  packaged Seeed Zephyr core, including bundled `ble_nus` wrappers plus the
+  copied examples `BleCustomGatt128Minimal`, `BleCustomGattRuntime`,
+  `BleGattTest`, `BleNordicUartBridge`, `BleNordicUartCommandConsole`, and
+  `BleNusBridge`.
+- Fixed the lower-level Zephyr Bluetooth wrapper that those examples depend
+  on: 16-bit UUID strings now parse correctly, dynamic services now zero-init
+  their Zephyr GATT attributes/services before registration, characteristic
+  value handles are backfilled after registration, and runtime service removal
+  correctly unregisters and frees host-managed GATT state.
+- Verified the new BLE custom-GATT/NUS tranche on hardware with forced
+  `pyocd` upload/reset: `libraries/Bluetooth/examples/BLEPeripheral` now
+  exposes a readable/writable custom characteristic without invalid-handle
+  failures, `BleCustomGattRuntime` now exposes both `0xFFF1` and `0xFFF2`
+  correctly and sends notifications after CCCD enable, and
+  `BleNordicUartCommandConsole` now exposes a spec-shaped NUS service
+  (`RX=write`, `TX=notify`) and responds to host commands over BLE.
+
 ## 0.1.11 - 2026-03-20
 
 - Added the next clean-core BLE connection parity tranche to the Seeed Zephyr

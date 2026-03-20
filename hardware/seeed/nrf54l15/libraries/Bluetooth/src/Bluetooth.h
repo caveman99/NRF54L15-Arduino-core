@@ -43,7 +43,12 @@ public:
     size_t _valueSize;
     size_t _valueLength;
     void (*_onWrite)(BLECharacteristic&);
+    void* _userContext;
+    uint16_t _lastWriteOffset;
+    uint16_t _lastWriteLength;
+    bool _lastWriteWithResponse;
     void* _zephyr_attr; 
+    void* _zephyr_cccd_attr;
 };
 
 class BLEService {
@@ -56,6 +61,7 @@ public:
     BLEUuid _uuid;
     BLECharacteristic* _characteristics[8];
     uint8_t _numCharacteristics;
+    int _registerError;
     void* _zephyr_svc; 
 };
 
@@ -76,6 +82,7 @@ public:
     int rssi() const;
 
     void addService(BLEService& service);
+    bool removeService(BLEService& service);
     bool setLocalName(const char* name);
     bool setAdvertisedService(BLEService& service);
 
