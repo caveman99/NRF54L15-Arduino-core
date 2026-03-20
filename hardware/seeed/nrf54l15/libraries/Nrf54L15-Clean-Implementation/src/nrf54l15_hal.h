@@ -1260,6 +1260,53 @@ struct BleAdvInteraction {
   uint8_t peerAddress[6];
 };
 
+struct BleConnectionInfo {
+  uint8_t peerAddress[6];
+  bool peerAddressRandom;
+  uint32_t accessAddress;
+  uint32_t crcInit;
+  uint16_t intervalUnits;
+  uint16_t latency;
+  uint16_t supervisionTimeoutUnits;
+  uint8_t channelMap[5];
+  uint8_t channelCount;
+  uint8_t hopIncrement;
+  uint8_t sleepClockAccuracy;
+};
+
+struct BleConnectionEvent {
+  bool eventStarted;
+  bool packetReceived;
+  bool crcOk;
+  bool emptyAckTransmitted;
+  bool packetIsNew;
+  bool peerAckedLastTx;
+  bool freshTxAllowed;
+  bool implicitEmptyAck;
+  bool terminateInd;
+  bool disconnectReasonValid;
+  bool disconnectReasonRemote;
+  bool llControlPacket;
+  bool attPacket;
+  bool txPacketSent;
+  uint16_t eventCounter;
+  uint8_t dataChannel;
+  int8_t rssiDbm;
+  uint8_t llid;
+  uint8_t rxNesn;
+  uint8_t rxSn;
+  uint8_t disconnectReason;
+  uint8_t llControlOpcode;
+  uint8_t attOpcode;
+  uint8_t payloadLength;
+  uint8_t txLlid;
+  uint8_t txNesn;
+  uint8_t txSn;
+  uint8_t txPayloadLength;
+  const uint8_t* payload;
+  const uint8_t* txPayload;
+};
+
 class BleRadio {
  public:
   explicit BleRadio(uint32_t radioBase = 0U, uint32_t ficrBase = 0U);
@@ -1284,6 +1331,9 @@ class BleRadio {
   bool buildScanResponsePacket();
   bool setGattDeviceName(const char* name);
   bool setGattBatteryLevel(uint8_t percent);
+  bool isConnected() const;
+  bool isConnectionEncrypted() const;
+  bool getConnectionInfo(BleConnectionInfo* info) const;
   bool scanCycle(BleScanPacket* packet, uint32_t perChannelSpinLimit = 300000UL);
   bool scanActiveCycle(BleActiveScanResult* result,
                        uint32_t perChannelAdvListenSpinLimit = 300000UL,
@@ -1294,6 +1344,8 @@ class BleRadio {
                               uint32_t interChannelDelayUs = 350U,
                               uint32_t requestListenSpinLimit = 250000UL,
                               uint32_t spinLimit = 700000UL);
+  bool pollConnectionEvent(BleConnectionEvent* event,
+                           uint32_t spinLimit = 450000UL);
 
  private:
   bool ensureAdvertisingIdentity();

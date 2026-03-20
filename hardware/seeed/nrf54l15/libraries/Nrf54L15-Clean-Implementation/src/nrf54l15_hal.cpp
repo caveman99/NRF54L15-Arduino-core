@@ -11,7 +11,10 @@
 #include <variant.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/services/bas.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/irq.h>
@@ -692,6 +695,211 @@ BleAddressType bleAddressTypeFromZephyr(uint8_t type) {
 uint8_t zephyrAddressTypeFromBle(BleAddressType type) {
   return (type == BleAddressType::kRandomStatic) ? BT_ADDR_LE_RANDOM
                                                  : BT_ADDR_LE_PUBLIC;
+}
+
+struct BleLinkShimState {
+  bt_conn* conn;
+  bool callbacksRegistered;
+  bool connected;
+  bool connectEventPending;
+  bool disconnectEventPending;
+  bool encrypted;
+  bool parameterUpdatePending;
+  uint8_t disconnectReason;
+  bool disconnectReasonValid;
+  bool disconnectReasonRemote;
+  bt_addr_le_t peerAddress;
+  uint16_t intervalUnits;
+  uint16_t latency;
+  uint16_t supervisionTimeoutUnits;
+  uint16_t eventCounter;
+  uint8_t nextDataChannel;
+  uint32_t lastEventMs;
+  int8_t rssiDbm;
+  uint8_t pendingTxPayload[32];
+  uint8_t pendingTxPayloadLen;
+  uint8_t pendingTxAttOpcode;
+};
+
+BleLinkShimState g_bleLinkState = {};
+bt_conn_cb g_bleConnCallbacks = {};
+
+constexpr uint8_t kBleDefaultChannelMap[5] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0x1FU};
+
+uint16_t bleIntervalUnitsFromInfo(const bt_conn_info& info) {
+  if (info.type != BT_CONN_TYPE_LE) {
+    return 0U;
+  }
+
+  if (info.le.interval_us != 0U) {
+    return static_cast<uint16_t>((info.le.interval_us + 1249U) / 1250U);
+  }
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  return info.le.interval;
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+}
+
+void clearBlePendingTx() {
+  g_bleLinkState.pendingTxPayloadLen = 0U;
+  g_bleLinkState.pendingTxAttOpcode = 0U;
+  memset(g_bleLinkState.pendingTxPayload, 0, sizeof(g_bleLinkState.pendingTxPayload));
+}
+
+void updateBleLinkInfo(const bt_conn* conn) {
+  if (conn == nullptr) {
+    return;
+  }
+
+  bt_conn_info info;
+  memset(&info, 0, sizeof(info));
+  if (bt_conn_get_info(conn, &info) == 0 && info.type == BT_CONN_TYPE_LE) {
+    g_bleLinkState.intervalUnits = bleIntervalUnitsFromInfo(info);
+    if (g_bleLinkState.intervalUnits == 0U) {
+      g_bleLinkState.intervalUnits = 24U;
+    }
+    g_bleLinkState.latency = info.le.latency;
+    g_bleLinkState.supervisionTimeoutUnits = info.le.timeout;
+    g_bleLinkState.encrypted = (info.security.level > BT_SECURITY_L1);
+  }
+
+  const bt_addr_le_t* peerAddress = bt_conn_get_dst(conn);
+  if (peerAddress != nullptr) {
+    memcpy(&g_bleLinkState.peerAddress, peerAddress, sizeof(g_bleLinkState.peerAddress));
+  } else {
+    memset(&g_bleLinkState.peerAddress, 0, sizeof(g_bleLinkState.peerAddress));
+  }
+}
+
+void bleLinkConnectedCallback(struct bt_conn* conn, uint8_t err) {
+  if (err != 0U) {
+    return;
+  }
+
+  if (g_bleLinkState.conn != nullptr && g_bleLinkState.conn != conn) {
+    bt_conn_unref(g_bleLinkState.conn);
+  }
+
+  g_bleLinkState.conn = bt_conn_ref(conn);
+  g_bleLinkState.connected = true;
+  g_bleLinkState.connectEventPending = true;
+  g_bleLinkState.disconnectEventPending = false;
+  g_bleLinkState.disconnectReason = 0U;
+  g_bleLinkState.disconnectReasonValid = false;
+  g_bleLinkState.disconnectReasonRemote = false;
+  g_bleLinkState.parameterUpdatePending = false;
+  g_bleLinkState.eventCounter = 0U;
+  g_bleLinkState.nextDataChannel = 0U;
+  g_bleLinkState.lastEventMs = 0U;
+  g_bleLinkState.rssiDbm = 0;
+  clearBlePendingTx();
+  updateBleLinkInfo(conn);
+}
+
+void bleLinkDisconnectedCallback(struct bt_conn* conn, uint8_t reason) {
+  updateBleLinkInfo(conn);
+  g_bleLinkState.connected = false;
+  g_bleLinkState.disconnectEventPending = true;
+  g_bleLinkState.disconnectReason = reason;
+  g_bleLinkState.disconnectReasonValid = true;
+  g_bleLinkState.disconnectReasonRemote =
+      (reason != BT_HCI_ERR_LOCALHOST_TERM_CONN);
+  g_bleLinkState.parameterUpdatePending = false;
+
+  if (g_bleLinkState.conn != nullptr) {
+    bt_conn_unref(g_bleLinkState.conn);
+    g_bleLinkState.conn = nullptr;
+  }
+}
+
+void bleLinkLeParamUpdatedCallback(struct bt_conn* conn,
+                                   uint16_t interval,
+                                   uint16_t latency,
+                                   uint16_t timeout) {
+  (void)conn;
+  g_bleLinkState.intervalUnits = interval;
+  g_bleLinkState.latency = latency;
+  g_bleLinkState.supervisionTimeoutUnits = timeout;
+  g_bleLinkState.parameterUpdatePending = true;
+}
+
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
+void bleLinkSecurityChangedCallback(struct bt_conn* conn,
+                                    bt_security_t level,
+                                    enum bt_security_err err) {
+  (void)conn;
+  g_bleLinkState.encrypted =
+      (err == BT_SECURITY_ERR_SUCCESS) && (level > BT_SECURITY_L1);
+}
+#endif
+
+void ensureBleLinkCallbacksRegistered() {
+  if (g_bleLinkState.callbacksRegistered) {
+    return;
+  }
+
+  memset(&g_bleConnCallbacks, 0, sizeof(g_bleConnCallbacks));
+  g_bleConnCallbacks.connected = bleLinkConnectedCallback;
+  g_bleConnCallbacks.disconnected = bleLinkDisconnectedCallback;
+  g_bleConnCallbacks.le_param_updated = bleLinkLeParamUpdatedCallback;
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
+  g_bleConnCallbacks.security_changed = bleLinkSecurityChangedCallback;
+#endif
+  if (bt_conn_cb_register(&g_bleConnCallbacks) == 0) {
+    g_bleLinkState.callbacksRegistered = true;
+  }
+}
+
+uint32_t bleSyntheticEventIntervalMs() {
+  uint16_t intervalUnits = g_bleLinkState.intervalUnits;
+  if (intervalUnits == 0U) {
+    intervalUnits = 24U;
+  }
+
+  uint32_t intervalMs = (static_cast<uint32_t>(intervalUnits) * 5U + 3U) / 4U;
+  if (intervalMs == 0U) {
+    intervalMs = 1U;
+  }
+  return intervalMs;
+}
+
+bool queueBleAttNotification(const struct bt_gatt_attr* attr,
+                             const uint8_t* value,
+                             uint8_t valueLength) {
+  if (attr == nullptr || value == nullptr || valueLength == 0U) {
+    return false;
+  }
+
+  const uint16_t handle = bt_gatt_attr_get_handle(attr);
+  if (handle == 0U) {
+    return false;
+  }
+
+  const uint8_t totalLength = static_cast<uint8_t>(valueLength + 7U);
+  if (totalLength > sizeof(g_bleLinkState.pendingTxPayload)) {
+    return false;
+  }
+
+  clearBlePendingTx();
+  g_bleLinkState.pendingTxPayload[0] = static_cast<uint8_t>(valueLength + 3U);
+  g_bleLinkState.pendingTxPayload[1] = 0x00U;
+  g_bleLinkState.pendingTxPayload[2] = 0x04U;
+  g_bleLinkState.pendingTxPayload[3] = 0x00U;
+  g_bleLinkState.pendingTxPayload[4] = 0x1BU;
+  g_bleLinkState.pendingTxPayload[5] = static_cast<uint8_t>(handle & 0xFFU);
+  g_bleLinkState.pendingTxPayload[6] = static_cast<uint8_t>((handle >> 8U) & 0xFFU);
+  memcpy(&g_bleLinkState.pendingTxPayload[7], value, valueLength);
+  g_bleLinkState.pendingTxPayloadLen = totalLength;
+  g_bleLinkState.pendingTxAttOpcode = 0x1BU;
+  return true;
+}
+
+bool bleVisibleConnectionActive() {
+  return g_bleLinkState.connected || g_bleLinkState.disconnectEventPending;
 }
 
 constexpr uint8_t kBleDataPduMaxPayload = 27U;
@@ -4989,6 +5197,7 @@ BleRadio::BleRadio(uint32_t radioBase, uint32_t ficrBase)
 
 bool BleRadio::begin(int8_t txPowerDbm) {
   txPowerDbm_ = txPowerDbm;
+  ensureBleLinkCallbacksRegistered();
   if (!BLE.begin(effectiveLocalName())) {
     initialized_ = false;
     return false;
@@ -5261,13 +5470,124 @@ bool BleRadio::setGattBatteryLevel(uint8_t percent) {
     return false;
   }
 
+#if defined(CONFIG_BT_BAS)
+  return true;
+#else
   auto* characteristic =
       static_cast<BLECharacteristic*>(batteryLevelCharacteristic_);
   if (characteristic == nullptr) {
     return false;
   }
   const uint8_t value = batteryLevel_;
-  return characteristic->writeValue(&value, sizeof(value));
+  const bool ok = characteristic->writeValue(&value, sizeof(value));
+  if (ok && g_bleLinkState.conn != nullptr &&
+      bt_gatt_is_subscribed(g_bleLinkState.conn,
+                            static_cast<const bt_gatt_attr*>(characteristic->_zephyr_attr),
+                            BT_GATT_CCC_NOTIFY)) {
+    (void)queueBleAttNotification(
+        static_cast<const bt_gatt_attr*>(characteristic->_zephyr_attr), &value,
+        sizeof(value));
+  }
+  return ok;
+#endif
+}
+
+bool BleRadio::isConnected() const { return bleVisibleConnectionActive(); }
+
+bool BleRadio::isConnectionEncrypted() const {
+  return g_bleLinkState.connected && g_bleLinkState.encrypted;
+}
+
+bool BleRadio::getConnectionInfo(BleConnectionInfo* info) const {
+  if (info == nullptr || !bleVisibleConnectionActive()) {
+    return false;
+  }
+
+  memset(info, 0, sizeof(*info));
+  memcpy(info->peerAddress, g_bleLinkState.peerAddress.a.val, sizeof(info->peerAddress));
+  info->peerAddressRandom =
+      (g_bleLinkState.peerAddress.type == BT_ADDR_LE_RANDOM);
+  info->accessAddress = 0U;
+  info->crcInit = 0U;
+  info->intervalUnits =
+      (g_bleLinkState.intervalUnits != 0U) ? g_bleLinkState.intervalUnits : 24U;
+  info->latency = g_bleLinkState.latency;
+  info->supervisionTimeoutUnits = g_bleLinkState.supervisionTimeoutUnits;
+  memcpy(info->channelMap, kBleDefaultChannelMap, sizeof(info->channelMap));
+  info->channelCount = 37U;
+  info->hopIncrement = 5U;
+  info->sleepClockAccuracy = 0U;
+  return true;
+}
+
+bool BleRadio::pollConnectionEvent(BleConnectionEvent* event, uint32_t spinLimit) {
+  if (event == nullptr) {
+    return false;
+  }
+
+  memset(event, 0, sizeof(*event));
+  const uint32_t deadlineMs = millis() + bleScanWindowMsFromSpin(spinLimit, 10U, 750U);
+  while (static_cast<int32_t>(millis() - deadlineMs) < 0) {
+    if (g_bleLinkState.disconnectEventPending) {
+      event->eventStarted = true;
+      event->terminateInd = true;
+      event->disconnectReasonValid = g_bleLinkState.disconnectReasonValid;
+      event->disconnectReasonRemote = g_bleLinkState.disconnectReasonRemote;
+      event->disconnectReason = g_bleLinkState.disconnectReason;
+      event->eventCounter = g_bleLinkState.eventCounter++;
+      event->dataChannel = g_bleLinkState.nextDataChannel++ % 37U;
+      event->rssiDbm = g_bleLinkState.rssiDbm;
+      g_bleLinkState.disconnectEventPending = false;
+      g_bleLinkState.disconnectReasonValid = false;
+      clearBlePendingTx();
+      return true;
+    }
+
+    if (!g_bleLinkState.connected) {
+      delay(1);
+      continue;
+    }
+
+    const uint32_t intervalMs = bleSyntheticEventIntervalMs();
+    const bool dueByTime =
+        (g_bleLinkState.lastEventMs == 0U) ||
+        ((millis() - g_bleLinkState.lastEventMs) >= intervalMs);
+    if (!g_bleLinkState.connectEventPending && !g_bleLinkState.parameterUpdatePending &&
+        g_bleLinkState.pendingTxPayloadLen == 0U && !dueByTime) {
+      delay(1);
+      continue;
+    }
+
+    event->eventStarted = true;
+    event->packetReceived = true;
+    event->crcOk = true;
+    event->packetIsNew = g_bleLinkState.connectEventPending;
+    event->peerAckedLastTx = true;
+    event->freshTxAllowed = true;
+    event->eventCounter = g_bleLinkState.eventCounter++;
+    event->dataChannel = g_bleLinkState.nextDataChannel++ % 37U;
+    event->rssiDbm = g_bleLinkState.rssiDbm;
+    event->llid = (g_bleLinkState.pendingTxPayloadLen > 0U) ? 0x02U : 0x01U;
+    event->emptyAckTransmitted = (g_bleLinkState.pendingTxPayloadLen == 0U);
+    event->txPacketSent = true;
+    event->txLlid = (g_bleLinkState.pendingTxPayloadLen > 0U) ? 0x02U : 0x01U;
+    if (g_bleLinkState.pendingTxPayloadLen > 0U) {
+      event->attPacket = true;
+      event->attOpcode = g_bleLinkState.pendingTxAttOpcode;
+      event->txPayloadLength = g_bleLinkState.pendingTxPayloadLen;
+      event->txPayload = g_bleLinkState.pendingTxPayload;
+      event->emptyAckTransmitted = false;
+    }
+    g_bleLinkState.connectEventPending = false;
+    g_bleLinkState.parameterUpdatePending = false;
+    g_bleLinkState.lastEventMs = millis();
+    if (g_bleLinkState.pendingTxPayloadLen > 0U) {
+      clearBlePendingTx();
+    }
+    return true;
+  }
+
+  return false;
 }
 
 bool BleRadio::scanCycle(BleScanPacket* packet, uint32_t perChannelSpinLimit) {
@@ -5511,21 +5831,29 @@ bool BleRadio::advertiseInteractEvent(BleAdvInteraction* interaction,
                                       uint32_t requestListenSpinLimit,
                                       uint32_t spinLimit) {
   (void)interChannelDelayUs;
-  (void)requestListenSpinLimit;
-  (void)spinLimit;
-  (void)pduType_;
-  (void)includeAdvertisingFlags_;
   (void)radioBase_;
   (void)ficrBase_;
 
   if (!initialized_ && !begin(txPowerDbm_)) {
     return false;
   }
-  if (!ensureBatteryService()) {
+  if (!ensureBatteryService() || !buildAdvertisingPacket() ||
+      !buildScanResponsePacket() || !ensureAdvertisingIdentity()) {
     return false;
   }
-  if (advertisingName_[0] != '\0') {
-    (void)BLE.setLocalName(advertisingName_);
+
+  bt_data ad[kBleMaxAdStructures];
+  size_t adCount = 0U;
+  if (!parseBleAdvertisingPayload(advertisingData_, advertisingDataLen_, ad,
+                                  kBleMaxAdStructures, &adCount)) {
+    return false;
+  }
+
+  bt_data sd[kBleMaxAdStructures];
+  size_t sdCount = 0U;
+  if (!parseBleAdvertisingPayload(scanResponseData_, scanResponseDataLen_, sd,
+                                  kBleMaxAdStructures, &sdCount)) {
+    return false;
   }
 
   if (interaction != nullptr) {
@@ -5533,18 +5861,74 @@ bool BleRadio::advertiseInteractEvent(BleAdvInteraction* interaction,
     interaction->channel = BleAdvertisingChannel::k37;
   }
 
-  if (!BLE.advertise()) {
+  const char* localName = effectiveLocalName();
+  if (localName != nullptr && localName[0] != '\0') {
+    (void)BLE.setLocalName(localName);
+  }
+
+  BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
+
+  uint32_t options = 0U;
+  switch (pduType_) {
+    case BleAdvPduType::kAdvInd:
+      options = BT_LE_ADV_OPT_CONN;
+      break;
+    case BleAdvPduType::kAdvNonConnInd:
+      options = 0U;
+      sdCount = 0U;
+      break;
+    case BleAdvPduType::kAdvScanInd:
+      options = BT_LE_ADV_OPT_SCANNABLE;
+      break;
+    default:
+      return false;
+  }
+  if (advertisingIdentityId_ != BT_ID_DEFAULT) {
+    options |= BT_LE_ADV_OPT_USE_IDENTITY;
+  }
+
+  bt_le_adv_param advParam = BT_LE_ADV_PARAM_INIT(
+      options, kBleLegacyOneShotAdvInterval, kBleLegacyOneShotAdvInterval, nullptr);
+  advParam.options = options;
+  advParam.id = advertisingIdentityId_;
+
+  int err = bt_le_adv_start(&advParam, (adCount > 0U) ? ad : nullptr, adCount,
+                            (sdCount > 0U) ? sd : nullptr, sdCount);
+  if (err == -EALREADY) {
+    (void)bt_le_adv_stop();
+    delay(1);
+    err = bt_le_adv_start(&advParam, (adCount > 0U) ? ad : nullptr, adCount,
+                          (sdCount > 0U) ? sd : nullptr, sdCount);
+  }
+  if (err != 0) {
     return false;
   }
 
+  const uint32_t waitMs = bleScanWindowMsFromSpin(
+      static_cast<uint64_t>(requestListenSpinLimit) +
+          static_cast<uint64_t>(spinLimit),
+      kBleLegacyOneShotWindowMs, 2500U);
   const uint32_t startedAt = millis();
-  while ((millis() - startedAt) < 150UL) {
-    delay(10);
+  while ((millis() - startedAt) < waitMs) {
+    if (g_bleLinkState.connected || g_bleLinkState.connectEventPending) {
+      break;
+    }
+    delay(5);
   }
-  BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
 
   if (interaction != nullptr) {
     interaction->scanResponseTransmitted = false;
+    if (g_bleLinkState.connected || g_bleLinkState.connectEventPending) {
+      interaction->receivedConnectInd = true;
+      interaction->connectIndChSel2 = useChSel2_;
+      interaction->peerAddressRandom =
+          (g_bleLinkState.peerAddress.type == BT_ADDR_LE_RANDOM);
+      interaction->rssiDbm = g_bleLinkState.rssiDbm;
+      memcpy(interaction->peerAddress, g_bleLinkState.peerAddress.a.val,
+             sizeof(interaction->peerAddress));
+    }
   }
   return true;
 }
@@ -5554,6 +5938,10 @@ bool BleRadio::ensureBatteryService() {
     return false;
   }
 
+#if defined(CONFIG_BT_BAS)
+  batteryServiceAdded_ = true;
+  return bt_bas_set_battery_level(batteryLevel_) == 0;
+#else
   auto* service = static_cast<BLEService*>(batteryService_);
   auto* characteristic =
       static_cast<BLECharacteristic*>(batteryLevelCharacteristic_);
@@ -5579,6 +5967,7 @@ bool BleRadio::ensureBatteryService() {
 
   const uint8_t value = batteryLevel_;
   return characteristic->writeValue(&value, sizeof(value));
+#endif
 }
 
 const char* BleRadio::effectiveLocalName() const {

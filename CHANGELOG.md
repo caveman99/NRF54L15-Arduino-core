@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.11 - 2026-03-20
+
+- Added the next clean-core BLE connection parity tranche to the Seeed Zephyr
+  core, including host-backed `isConnected()`, `isConnectionEncrypted()`,
+  `getConnectionInfo()`, `pollConnectionEvent()`, and richer
+  `advertiseInteractEvent()` compatibility on top of Zephyr peripheral
+  connections.
+- Copied the next clean-core BLE connection examples into the packaged Zephyr
+  core: `BleBatteryNotifyPeripheral`, `BleConnectSerialMonitor`,
+  `BleConnectableScannableAdvertiser`, `BleConnectionPeripheral`,
+  `BleConnectionTimingMetrics`, and `BleGattBasicPeripheral`.
+- Enabled Zephyr BAS in the packaged base config and routed
+  `setGattBatteryLevel()` through `bt_bas_set_battery_level()`, which makes
+  the clean battery/GATT examples expose a real Battery Service to central
+  devices on this core.
+- Verified the new connection tranche on hardware with forced `pyocd`
+  upload/reset: `BleConnectionPeripheral` advertises and accepts a central
+  connection as `C0:DE:54:15:00:21 / XIAO54-LINK`, `BleConnectSerialMonitor`
+  connects as `C0:DE:54:15:00:31 / XIAO-CONSOLE`, and
+  `BleBatteryNotifyPeripheral` now exposes `0000180F/00002A19` and sends live
+  battery notifications after CCCD enable.
+
 ## 0.1.10 - 2026-03-20
 
 - Added the next clean-core BLE scanner parity tranche to the Seeed Zephyr
