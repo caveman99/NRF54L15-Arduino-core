@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.15 - 2026-03-20
+
+- Added the clean-core BLE channel sounding tranche to the packaged Seeed
+  Zephyr core, including bundled `ble_channel_sounding` wrappers plus the
+  copied examples `BleChannelSoundingInitiator` and
+  `BleChannelSoundingReflector`.
+- Ported the clean raw-RADIO channel-sounding implementation onto the
+  packaged Zephyr/NCS header set without patching bundled upstream headers:
+  the compatibility layer now adapts to the repo's exposed AUXDATA lane count
+  and only uses AUXDATA direction fields when those definitions exist.
+- This keeps the clean phase-sounding path available on the Zephyr core even
+  though the packaged header set currently exposes a reduced AUXDATA register
+  surface relative to the clean core; the bundled examples still run in the
+  clean-core `rtt=disabled_clean_core` mode.
+- Re-verified the full copied clean-derived example set after this addition:
+  all 73 bundled parity sketches compile on `seeed:nrf54l15:xiao_nrf54l15`.
+- Hardware-checked on the connected board with forced `pyocd` upload/reset:
+  `BleChannelSoundingReflector` boots and logs `replies=0`, and
+  `BleChannelSoundingInitiator` boots and logs sweep progress with no valid
+  channels until paired with a second reflector board. End-to-end ranging was
+  not runtime-validated in this pass because it requires two nRF54L15 boards.
+
 ## 0.1.14 - 2026-03-20
 
 - Fixed the Zephyr-core XIAO variant pin map so Arduino GPIO now uses raw
