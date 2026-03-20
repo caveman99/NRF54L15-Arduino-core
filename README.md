@@ -1,20 +1,19 @@
-<h1><font color="red">DEPRECATED: this Zephyr-based core is retired.</font></h1>
-<h2><font color="red">Use the replacement repo instead: <a href="https://github.com/lolren/NRF54L15-Clean-Arduino-core">NRF54L15-Clean-Arduino-core</a></font></h2>
-<h2><font color="red">Recommended Boards Manager URL: https://raw.githubusercontent.com/lolren/NRF54L15-Clean-Arduino-core/main/package_nrf54l15clean_index.json</font></h2>
-
 <h1><font color="red">IMPORTANT: first-time installation + first compile can be slow and may look stalled. Let it finish.</font></h1>
+<h2><font color="red">Boards Manager URL for this Zephyr core: https://raw.githubusercontent.com/lolren/NRF54L15-Arduino-core/main/package_nrf54l15_zephyr_based_index.json</font></h2>
+<h2><font color="red">If you want the leaner non-Zephyr variant, see <a href="https://github.com/lolren/NRF54L15-Clean-Arduino-core">NRF54L15-Clean-Arduino-core</a> and its Boards Manager URL: https://raw.githubusercontent.com/lolren/NRF54L15-Clean-Arduino-core/main/package_nrf54l15clean_index.json</font></h2>
+
 <h2><font color="red">Disk usage warning: after first setup/compilation, required disk space is about 9 GB (SDK/toolchain/workspace + build cache).</font></h2>
 <h2><font color="red">Windows can be much slower because real-time protection scans large SDK/toolchain files. Recommended: use Linux. On Windows, add this core/tools path as an antivirus exception, or temporarily disable real-time protection only for first setup/compile.</font></h2>
 <h2><font color="red">Windows recommendation: use the script install method only (`install_windows.bat`). Sometimes first compilation on Windows fails with `ECONNRESET` due to a bug in the Arduino IDE Windows client (Electron-based). After one successful first compilation, switching back to Arduino IDE usually works.</font></h2>
 
-# Arduino Core for nRF54L15 (Zephyr-Based, Deprecated)
+# Arduino Core for nRF54L15 (Zephyr-Based)
 
-> This repository is kept for legacy users only.
+> This repository is the Zephyr/NCS-based nRF54L15 Arduino core.
 >
-> New development, fixes, and releases are happening in the replacement project:
+> If you want a smaller and cleaner non-Zephyr alternative, see:
 > [NRF54L15-Clean-Arduino-core](https://github.com/lolren/NRF54L15-Clean-Arduino-core)
 >
-> If you are installing today, use the clean core instead of this one.
+> Choose this repo when you want the Zephyr-based build/runtime stack.
 
 A clean, lightweight Arduino core for Nordic Semiconductor nRF54L15 microcontrollers.
 This repository intentionally keeps heavyweight SDK/toolchain content out of source control and release archives.
@@ -71,7 +70,7 @@ Hardware documents:
 - Dedicated board option in Arduino IDE: **XIAO nRF54L15 Sense (Zephyr-Based)**
 - Curated Sense examples under `Examples > Sense`
 
-## Legacy Installation
+## Installation
 
 ### Method 1: Manual Installation (Linux/macOS recommended)
 
