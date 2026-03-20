@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.16 - 2026-03-20
+
+- Hardened the packaged Zephyr BLE wrapper in
+  `libraries/Bluetooth/src/Bluetooth.cpp`: scan now preserves real init
+  errors, scan/advertise retry logic now handles busy controller state more
+  defensively, `Bluetooth.end()` now unregisters tracked services and clears
+  BLE state, and dynamic GATT service registration now guards all allocation
+  paths instead of risking partial-registration null dereferences.
+- Added additional defensive checks around characteristic value buffers and
+  GATT read/write callbacks so low-memory or malformed callback state fails
+  cleanly instead of dereferencing null pointers.
+- Re-verified the BLE surface after hardening: all 29 packaged BLE sketches
+  (`libraries/Bluetooth/examples` plus
+  `libraries/Nrf54L15-Clean-Implementation/examples/BLE`) compile on
+  `seeed:nrf54l15:xiao_nrf54l15`.
+- Runtime-checked on hardware with forced `pyocd` upload/reset:
+  `libraries/Bluetooth/examples/BLEAdvertise` is discoverable from the host,
+  `libraries/Bluetooth/examples/BLEPeripheral` advertises and accepts a host
+  GATT connection with working read/write on the custom characteristic, and
+  `libraries/Bluetooth/examples/BLEScan` reports nearby BLE advertisers.
+- Also exercised an advertise-to-scan transition probe sketch after the
+  hardening changes; the board stayed alive after the scan phase instead of
+  hanging, which is the specific mixed-mode path these retries and cleanup
+  changes are meant to stabilize.
+
 ## 0.1.15 - 2026-03-20
 
 - Added the clean-core BLE channel sounding tranche to the packaged Seeed

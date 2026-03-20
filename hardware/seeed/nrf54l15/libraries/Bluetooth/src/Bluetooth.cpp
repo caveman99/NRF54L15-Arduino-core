@@ -68,11 +68,16 @@ BLECharacteristic::BLECharacteristic(const char* uuid, uint8_t properties, size_
     : _uuid(uuid), _properties(properties), _valueSize(valueSize), _valueLength(0), _onWrite(nullptr),
       _userContext(nullptr), _lastWriteOffset(0), _lastWriteLength(0), _lastWriteWithResponse(false),
       _zephyr_attr(nullptr), _zephyr_cccd_attr(nullptr) {
-    _value = (uint8_t*)malloc(valueSize);
-    memset(_value, 0, valueSize);
+    _value = (valueSize > 0U) ? static_cast<uint8_t*>(malloc(valueSize)) : nullptr;
+    if (_value != nullptr && valueSize > 0U) {
+        memset(_value, 0, valueSize);
+    }
 }
 
 bool BLECharacteristic::writeValue(const uint8_t* value, size_t length) {
+    if (_value == nullptr || (value == nullptr && length > 0U)) {
+        return false;
+    }
     if (length > _valueSize) length = _valueSize;
     memcpy(_value, value, length);
     _valueLength = length;
@@ -157,7 +162,7 @@ int runScanWindow(const struct bt_le_scan_param *scanParam, uint32_t timeoutMs)
     }
 
     int err = bt_le_scan_start(scanParam, scanCallback);
-    if (err == -EALREADY) {
+    if (err == -EALREADY || err == -EBUSY) {
         (void)bt_le_scan_stop();
         err = bt_le_scan_start(scanParam, scanCallback);
     }
@@ -177,7 +182,13 @@ int runScanWindow(const struct bt_le_scan_param *scanParam, uint32_t timeoutMs)
 ssize_t read_chr(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                  void *buf, uint16_t len, uint16_t offset)
 {
+    if (attr == nullptr || attr->user_data == nullptr) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     BLECharacteristic *chr = (BLECharacteristic *)attr->user_data;
+    if (chr->value() == nullptr && chr->valueLength() > 0U) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     return bt_gatt_attr_read(conn, attr, buf, len, offset, chr->value(), chr->valueLength());
 }
 
@@ -185,7 +196,13 @@ ssize_t write_chr(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                   const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
     ARG_UNUSED(conn);
+    if (attr == nullptr || attr->user_data == nullptr) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     BLECharacteristic *chr = (BLECharacteristic *)attr->user_data;
+    if (chr->_value == nullptr) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     if (offset + len > chr->_valueSize) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
@@ -280,10 +297,29 @@ bool BluetoothClass::begin(const char *deviceName)
 }
 
 void BluetoothClass::end() {
-    if (_initialized) {
-        stopAdvertising();
-        _initialized = false;
+    if (!_initialized) {
+        return;
     }
+
+    (void)bt_le_scan_stop();
+    stopAdvertising();
+
+    while (_numServices > 0) {
+        BLEService* service = _services[_numServices - 1];
+        if (service == nullptr) {
+            --_numServices;
+            continue;
+        }
+        (void)removeService(*service);
+    }
+
+    _advertisedService = nullptr;
+    _hasScanResult = false;
+    _rssi = -127;
+    _address[0] = '\0';
+    _name[0] = '\0';
+    _lastError = 0;
+    _initialized = false;
 }
 
 bool BluetoothClass::setLocalName(const char* name) {
@@ -314,18 +350,42 @@ void BluetoothClass::addService(BLEService& service) {
         service._registerError = -ENOMEM;
         return;
     }
+
+    struct bt_gatt_service *zephyr_svc =
+        static_cast<struct bt_gatt_service *>(calloc(1, sizeof(struct bt_gatt_service)));
+    if (zephyr_svc == nullptr) {
+        free(attrs);
+        _lastError = -ENOMEM;
+        service._registerError = -ENOMEM;
+        return;
+    }
+    zephyr_svc->attrs = attrs;
+    zephyr_svc->attr_count = 0;
+    service._zephyr_svc = zephyr_svc;
     size_t ai = 0;
 
     struct bt_uuid *svc_uuid;
     if (service._uuid._is16bit) {
         struct bt_uuid_16 *u16 =
             static_cast<struct bt_uuid_16 *>(calloc(1, sizeof(struct bt_uuid_16)));
+        if (u16 == nullptr) {
+            _lastError = -ENOMEM;
+            service._registerError = -ENOMEM;
+            cleanupZephyrService(service);
+            return;
+        }
         u16->uuid.type = BT_UUID_TYPE_16;
         u16->val = service._uuid.uuid16();
         svc_uuid = (struct bt_uuid *)u16;
     } else {
         struct bt_uuid_128 *u128 =
             static_cast<struct bt_uuid_128 *>(calloc(1, sizeof(struct bt_uuid_128)));
+        if (u128 == nullptr) {
+            _lastError = -ENOMEM;
+            service._registerError = -ENOMEM;
+            cleanupZephyrService(service);
+            return;
+        }
         u128->uuid.type = BT_UUID_TYPE_128;
         memcpy(u128->val, service._uuid.data(), 16);
         svc_uuid = (struct bt_uuid *)u128;
@@ -337,6 +397,7 @@ void BluetoothClass::addService(BLEService& service) {
     attrs[ai].write = NULL;
     attrs[ai].user_data = svc_uuid;
     ai++;
+    zephyr_svc->attr_count = ai;
 
     for (uint8_t i = 0; i < service._numCharacteristics; i++) {
         BLECharacteristic* chr = service._characteristics[i];
@@ -344,12 +405,24 @@ void BluetoothClass::addService(BLEService& service) {
         if (chr->_uuid._is16bit) {
             struct bt_uuid_16 *u16 =
                 static_cast<struct bt_uuid_16 *>(calloc(1, sizeof(struct bt_uuid_16)));
+            if (u16 == nullptr) {
+                _lastError = -ENOMEM;
+                service._registerError = -ENOMEM;
+                cleanupZephyrService(service);
+                return;
+            }
             u16->uuid.type = BT_UUID_TYPE_16;
             u16->val = chr->_uuid.uuid16();
             chr_uuid = (struct bt_uuid *)u16;
         } else {
             struct bt_uuid_128 *u128 =
                 static_cast<struct bt_uuid_128 *>(calloc(1, sizeof(struct bt_uuid_128)));
+            if (u128 == nullptr) {
+                _lastError = -ENOMEM;
+                service._registerError = -ENOMEM;
+                cleanupZephyrService(service);
+                return;
+            }
             u128->uuid.type = BT_UUID_TYPE_128;
             memcpy(u128->val, chr->_uuid.data(), 16);
             chr_uuid = (struct bt_uuid *)u128;
@@ -375,6 +448,13 @@ void BluetoothClass::addService(BLEService& service) {
 
         struct bt_gatt_chrc *chrc_data =
             static_cast<struct bt_gatt_chrc *>(calloc(1, sizeof(struct bt_gatt_chrc)));
+        if (chrc_data == nullptr) {
+            free(chr_uuid);
+            _lastError = -ENOMEM;
+            service._registerError = -ENOMEM;
+            cleanupZephyrService(service);
+            return;
+        }
         chrc_data->uuid = chr_uuid;
         chrc_data->value_handle = 0;
         chrc_data->properties = props;
@@ -385,6 +465,7 @@ void BluetoothClass::addService(BLEService& service) {
         attrs[ai].write = NULL;
         attrs[ai].user_data = chrc_data;
         ai++;
+        zephyr_svc->attr_count = ai;
 
         attrs[ai].uuid = chr_uuid;
         attrs[ai].perm = perm;
@@ -394,11 +475,18 @@ void BluetoothClass::addService(BLEService& service) {
         chr->_zephyr_attr = &attrs[ai];
         chr->_zephyr_cccd_attr = nullptr;
         ai++;
+        zephyr_svc->attr_count = ai;
 
         if (chr->_properties & BLECharacteristic::BLENotify) {
             struct bt_gatt_ccc_managed_user_data *ccc_data =
                 static_cast<struct bt_gatt_ccc_managed_user_data *>(
                     calloc(1, sizeof(struct bt_gatt_ccc_managed_user_data)));
+            if (ccc_data == nullptr) {
+                _lastError = -ENOMEM;
+                service._registerError = -ENOMEM;
+                cleanupZephyrService(service);
+                return;
+            }
             attrs[ai].uuid = BT_UUID_GATT_CCC;
             attrs[ai].perm = BT_GATT_PERM_READ | BT_GATT_PERM_WRITE;
             attrs[ai].read = bt_gatt_attr_read_ccc;
@@ -406,12 +494,9 @@ void BluetoothClass::addService(BLEService& service) {
             attrs[ai].user_data = ccc_data;
             chr->_zephyr_cccd_attr = &attrs[ai];
             ai++;
+            zephyr_svc->attr_count = ai;
         }
     }
-
-    struct bt_gatt_service *zephyr_svc =
-        static_cast<struct bt_gatt_service *>(calloc(1, sizeof(struct bt_gatt_service)));
-    zephyr_svc->attrs = attrs;
     zephyr_svc->attr_count = ai;
     
     const int err = bt_gatt_service_register(zephyr_svc);
@@ -546,6 +631,11 @@ bool BluetoothClass::advertise()
         NULL);
 
     int err = bt_le_adv_start(&adv_param, ad, ad_count, sd_count > 0 ? sd : NULL, sd_count);
+    if (err == -EALREADY || err == -EBUSY) {
+        (void)bt_le_adv_stop();
+        (void)bt_le_scan_stop();
+        err = bt_le_adv_start(&adv_param, ad, ad_count, sd_count > 0 ? sd : NULL, sd_count);
+    }
     if (err != 0) {
         _lastError = err;
         return false;
@@ -567,8 +657,12 @@ void BluetoothClass::stopAdvertising()
 bool BluetoothClass::scan(uint32_t timeoutMs)
 {
     if (!_initialized && !begin(nullptr)) {
-        _lastError = -EAGAIN;
         return false;
+    }
+
+    const bool restartAdvertising = _advertising;
+    if (restartAdvertising) {
+        stopAdvertising();
     }
 
     g_hasScanResult = false;
@@ -583,13 +677,20 @@ bool BluetoothClass::scan(uint32_t timeoutMs)
         .window = BT_GAP_SCAN_FAST_WINDOW,
     };
 
-    _lastError = runScanWindow(&active_scan_param, timeoutMs);
+    const int scanErr = runScanWindow(&active_scan_param, timeoutMs);
     _hasScanResult = (g_hasScanResult != false);
     _rssi = g_lastRssi;
     strncpy(_address, g_lastAddress, sizeof(_address) - 1);
     _address[sizeof(_address) - 1] = '\0';
     strncpy(_name, g_lastName, sizeof(_name) - 1);
     _name[sizeof(_name) - 1] = '\0';
+
+    int resumeErr = 0;
+    if (restartAdvertising && !advertise()) {
+        resumeErr = _lastError;
+    }
+
+    _lastError = (scanErr != 0) ? scanErr : resumeErr;
     return _hasScanResult;
 }
 
