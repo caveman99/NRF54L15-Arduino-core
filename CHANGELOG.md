@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.13 - 2026-03-20
+
+- Added the clean-core BLE pairing and bond-persistence parity tranche to the
+  packaged Seeed Zephyr core, including `BleRadio` support for
+  `getEncryptionDebugCounters()`, bond record inspection/clearing, persistent
+  bond callback hooks, disconnect reason reporting, and the copied examples
+  `BleBondPersistenceProbe` and `BlePairingEncryptionStatus`.
+- Enabled Zephyr Bluetooth settings persistence in the packaged base config
+  (`CONFIG_SETTINGS`, `CONFIG_NVS`, `CONFIG_BT_SETTINGS`) and now call
+  `settings_load()` during Bluetooth startup so bonded peers survive the host
+  stack bring-up path correctly on this core.
+- Fixed the clean-style pairing acceptance flow on top of Zephyr by deferring
+  `bt_conn_auth_pairing_confirm()` out of the auth callback path and servicing
+  it from the regular Arduino/BLE polling path instead, which avoids the
+  earlier pairing-time crash on this target.
+- Raised the packaged Zephyr Bluetooth workqueue/RX/TX stack sizes to remove
+  the observed `USAGE FAULT / Stack overflow` failure during BLE pairing on
+  nRF54L15 hardware.
+- Verified on hardware with forced `pyocd` upload/reset: `BleBondPersistenceProbe`
+  pairs, bonds, reconnects, and reports encryption state correctly, and
+  `BlePairingEncryptionStatus` plus `BleConnectionPeripheral` compile cleanly
+  against the released core. Clean-core channel sounding examples are still
+  held back because the bundled Zephyr/NCS register headers in this repo do
+  not yet expose the required AUXDATA definitions.
+
 ## 0.1.12 - 2026-03-20
 
 - Added the clean-core custom GATT and Nordic UART parity tranche to the

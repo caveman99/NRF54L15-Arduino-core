@@ -1213,6 +1213,10 @@ enum class BleAddressType : uint8_t {
   kRandomStatic = 1,
 };
 
+#if !defined(NRF54L15_CLEAN_BLE_DEFAULT_TX_DBM)
+#define NRF54L15_CLEAN_BLE_DEFAULT_TX_DBM -8
+#endif
+
 enum class BleAdvPduType : uint8_t {
   kAdvInd = 0x00,
   kAdvDirectInd = 0x01,
@@ -1318,6 +1322,97 @@ struct BleConnectionEvent {
   const uint8_t* txPayload;
 };
 
+struct BleEncryptionDebugCounters {
+  uint32_t followupArmed;
+  uint32_t followupEndSeen;
+  uint32_t followupCrcOk;
+  uint32_t followupStartEncReqSeen;
+  uint32_t followupStartEncRspTxOk;
+  uint32_t followupRxLlid1;
+  uint32_t followupRxLlid2;
+  uint32_t followupRxLlid3;
+  uint8_t lastFollowHdr;
+  uint8_t lastFollowLlid;
+  uint8_t lastFollowLen;
+  uint8_t lastFollowByte0;
+  uint32_t mainEncReqSeen;
+  uint32_t mainStartEncReqSeen;
+  uint32_t mainStartEncReqSeenDecrypted;
+  uint32_t mainEncRspTxOk;
+  uint32_t mainStartEncRspTxOk;
+  uint32_t startPendingControlRxSeen;
+  uint8_t startPendingLastHdr;
+  uint8_t startPendingLastLenRaw;
+  uint8_t startPendingLastByte0;
+  uint8_t startPendingLastDecrypted;
+  uint32_t encRspTxenLagLastUs;
+  uint32_t encRspTxenLagMaxUs;
+  uint32_t encRxMicFailCount;
+  uint32_t encRxShortPduCount;
+  uint32_t encRxLastMicFailCounterLo;
+  uint8_t encRxLastMicFailHdr;
+  uint8_t encRxLastMicFailLenRaw;
+  uint8_t encRxLastMicFailDir;
+  uint8_t encRxLastMicFailState;
+  uint8_t encRxLastMicFailData0;
+  uint8_t encRxLastMicFailData1;
+  uint8_t encRxLastMicFailData2;
+  uint8_t encRxLastMicFailData3;
+  uint8_t encRxLastMicFailData4;
+  uint32_t encStartRspRxCount;
+  uint8_t encStartRspLastRawLen;
+  uint8_t encStartRspLastDecrypted;
+  uint8_t encStartRspLastHdr;
+  uint8_t reserved0;
+  uint32_t encPauseReqAcceptedCount;
+  uint32_t encPauseRspRxCount;
+  uint32_t encClearCount;
+  uint8_t encLastClearReason;
+  uint32_t txenLagLastUs;
+  uint32_t txenLagMaxUs;
+  uint32_t encTxenLagLastUs;
+  uint32_t encTxenLagMaxUs;
+  uint32_t encTxPacketCount;
+  uint32_t encLastTxCounterLo;
+  uint32_t encLastRxCounterLo;
+  uint8_t encLastTxHdr;
+  uint8_t encLastTxPlainLen;
+  uint8_t encLastTxAirLen;
+  uint8_t encLastTxWasFresh;
+  uint8_t encLastTxWasEncrypted;
+  uint8_t encLastRxHdr;
+  uint8_t encLastRxLenRaw;
+  uint8_t encLastRxWasNew;
+  uint8_t encLastRxWasDecrypted;
+  uint8_t reserved1;
+  uint8_t encLastSkdm[8];
+  uint8_t encLastIvm[4];
+  uint8_t encLastSkds[8];
+  uint8_t encLastIvs[4];
+  uint8_t encLastSessionKey[16];
+  uint8_t encLastSessionAltKey[16];
+  uint8_t encLastSessionKeyValid;
+  uint8_t encLastSessionAltKeyValid;
+  uint8_t encLastRxDir;
+  uint8_t encLastTxDir;
+};
+
+struct BleBondRecord {
+  uint8_t peerAddress[6];
+  uint8_t peerAddressRandom;
+  uint8_t localAddress[6];
+  uint8_t localAddressRandom;
+  uint8_t ltk[16];
+  uint8_t rand[8];
+  uint16_t ediv;
+  uint8_t keySize;
+  uint8_t reserved[3];
+};
+
+using BleBondLoadCallback = bool (*)(BleBondRecord* outRecord, void* context);
+using BleBondSaveCallback = bool (*)(const BleBondRecord* record, void* context);
+using BleBondClearCallback = bool (*)(void* context);
+using BleTraceCallback = void (*)(const char* message, void* context);
 using BleGattWriteCallback = void (*)(uint16_t valueHandle, const uint8_t* value,
                                       uint8_t valueLength, bool withResponse,
                                       void* context);
@@ -1389,6 +1484,19 @@ class BleRadio {
   bool isConnected() const;
   bool isConnectionEncrypted() const;
   bool getConnectionInfo(BleConnectionInfo* info) const;
+  void getEncryptionDebugCounters(BleEncryptionDebugCounters* out) const;
+  void clearEncryptionDebugCounters();
+  bool hasBondRecord() const;
+  bool getBondRecord(BleBondRecord* outRecord) const;
+  bool clearBondRecord(bool clearPersistentStorage = true);
+  void setBondPersistenceCallbacks(BleBondLoadCallback loadCallback,
+                                   BleBondSaveCallback saveCallback,
+                                   BleBondClearCallback clearCallback = nullptr,
+                                   void* context = nullptr);
+  void setTraceCallback(BleTraceCallback callback, void* context = nullptr);
+  bool getLastDisconnectReason(uint8_t* outReason,
+                               bool* outRemote = nullptr) const;
+  bool disconnect(uint32_t spinLimit = 300000UL);
   bool scanCycle(BleScanPacket* packet, uint32_t perChannelSpinLimit = 300000UL);
   bool scanActiveCycle(BleActiveScanResult* result,
                        uint32_t perChannelAdvListenSpinLimit = 300000UL,
@@ -1399,7 +1507,7 @@ class BleRadio {
                               uint32_t interChannelDelayUs = 350U,
                               uint32_t requestListenSpinLimit = 250000UL,
                               uint32_t spinLimit = 700000UL);
-  bool pollConnectionEvent(BleConnectionEvent* event,
+  bool pollConnectionEvent(BleConnectionEvent* event = nullptr,
                            uint32_t spinLimit = 450000UL);
 
  private:
@@ -1443,6 +1551,7 @@ class BleRadio {
                              bool withResponse);
   bool ensureAdvertisingIdentity();
   bool ensureBatteryService();
+  bool resolveLocalIdentityId(uint8_t* outIdentityId) const;
   const char* effectiveLocalName() const;
 
   uint32_t radioBase_;

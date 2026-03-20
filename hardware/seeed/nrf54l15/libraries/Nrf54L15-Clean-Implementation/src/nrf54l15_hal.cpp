@@ -7,6 +7,8 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <variant.h>
 
@@ -770,8 +772,256 @@ struct BleLinkShimState {
 
 BleLinkShimState g_bleLinkState = {};
 bt_conn_cb g_bleConnCallbacks = {};
+bt_conn_auth_cb g_bleAuthCallbacks = {};
+bt_conn_auth_info_cb g_bleAuthInfoCallbacks = {};
+
+struct BleSecurityShimState {
+  bool authCallbacksRegistered;
+  bool authInfoCallbacksRegistered;
+  bool bondRecordValid;
+  bool localIdentityValid;
+  bool pairingConfirmPending;
+  uint8_t localIdentityId;
+  bt_conn* pairingConfirmConn;
+  BleBondRecord bondRecord;
+  BleEncryptionDebugCounters encDebug;
+  BleBondLoadCallback bondLoadCallback;
+  BleBondSaveCallback bondSaveCallback;
+  BleBondClearCallback bondClearCallback;
+  void* bondCallbackContext;
+  BleTraceCallback traceCallback;
+  void* traceContext;
+};
+
+BleSecurityShimState g_bleSecurityState = {};
 
 constexpr uint8_t kBleDefaultChannelMap[5] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0x1FU};
+
+void bleTraceLog(const char* format, ...) {
+  if (g_bleSecurityState.traceCallback == nullptr || format == nullptr) {
+    return;
+  }
+
+  char buffer[160];
+  va_list args;
+  va_start(args, format);
+  const int length = vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  if (length < 0) {
+    return;
+  }
+
+  buffer[sizeof(buffer) - 1U] = '\0';
+  g_bleSecurityState.traceCallback(buffer, g_bleSecurityState.traceContext);
+}
+
+bool getIdentityAddressById(uint8_t identityId, bt_addr_le_t* outAddress) {
+  if (outAddress == nullptr) {
+    return false;
+  }
+
+  bt_addr_le_t addresses[CONFIG_BT_ID_MAX];
+  memset(addresses, 0, sizeof(addresses));
+  size_t count = ARRAY_SIZE(addresses);
+  bt_id_get(addresses, &count);
+  if (identityId >= count) {
+    return false;
+  }
+
+  *outAddress = addresses[identityId];
+  return true;
+}
+
+bool findIdentityIdByAddress(const uint8_t address[6], BleAddressType type,
+                             uint8_t* outIdentityId) {
+  if (address == nullptr || outIdentityId == nullptr) {
+    return false;
+  }
+
+  bt_addr_le_t addresses[CONFIG_BT_ID_MAX];
+  memset(addresses, 0, sizeof(addresses));
+  size_t count = ARRAY_SIZE(addresses);
+  bt_id_get(addresses, &count);
+
+  const uint8_t zephyrType = zephyrAddressTypeFromBle(type);
+  for (size_t index = 0; index < count; ++index) {
+    if (addresses[index].type != zephyrType) {
+      continue;
+    }
+    if (memcmp(addresses[index].a.val, address, 6U) == 0) {
+      *outIdentityId = static_cast<uint8_t>(index);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void clearCachedBondRecord() {
+  memset(&g_bleSecurityState.bondRecord, 0, sizeof(g_bleSecurityState.bondRecord));
+  g_bleSecurityState.bondRecordValid = false;
+}
+
+void clearPendingPairingConfirm() {
+  g_bleSecurityState.pairingConfirmPending = false;
+  if (g_bleSecurityState.pairingConfirmConn != nullptr) {
+    bt_conn_unref(g_bleSecurityState.pairingConfirmConn);
+    g_bleSecurityState.pairingConfirmConn = nullptr;
+  }
+}
+
+void queuePendingPairingConfirm(struct bt_conn* conn) {
+  if (conn == nullptr) {
+    return;
+  }
+
+  if (g_bleSecurityState.pairingConfirmConn != nullptr &&
+      g_bleSecurityState.pairingConfirmConn != conn) {
+    bt_conn_unref(g_bleSecurityState.pairingConfirmConn);
+    g_bleSecurityState.pairingConfirmConn = nullptr;
+  }
+
+  if (g_bleSecurityState.pairingConfirmConn == nullptr) {
+    g_bleSecurityState.pairingConfirmConn = bt_conn_ref(conn);
+  }
+  g_bleSecurityState.pairingConfirmPending = true;
+}
+
+void servicePendingBleSecurityActions() {
+  if (!g_bleSecurityState.pairingConfirmPending ||
+      g_bleSecurityState.pairingConfirmConn == nullptr) {
+    return;
+  }
+
+  bt_conn* conn = g_bleSecurityState.pairingConfirmConn;
+  g_bleSecurityState.pairingConfirmConn = nullptr;
+  g_bleSecurityState.pairingConfirmPending = false;
+
+  const int err = bt_conn_auth_pairing_confirm(conn);
+  if (err != 0) {
+    bleTraceLog("pairing-confirm err=%d", err);
+  } else {
+    bleTraceLog("pairing-confirm accepted");
+  }
+  bt_conn_unref(conn);
+}
+
+bool cacheBondRecord(const BleBondRecord& record, uint8_t identityId, bool invokeSave) {
+  g_bleSecurityState.bondRecord = record;
+  g_bleSecurityState.bondRecordValid = true;
+  g_bleSecurityState.localIdentityValid = true;
+  g_bleSecurityState.localIdentityId = identityId;
+
+  if (invokeSave && g_bleSecurityState.bondSaveCallback != nullptr) {
+    if (!g_bleSecurityState.bondSaveCallback(&record,
+                                             g_bleSecurityState.bondCallbackContext)) {
+      bleTraceLog("bond-save-callback failed");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool buildBondRecordFromConn(const bt_conn* conn, BleBondRecord* outRecord,
+                             uint8_t* outIdentityId = nullptr) {
+  if (conn == nullptr || outRecord == nullptr) {
+    return false;
+  }
+
+  bt_conn_info info;
+  memset(&info, 0, sizeof(info));
+  if (bt_conn_get_info(conn, &info) != 0 || info.type != BT_CONN_TYPE_LE) {
+    return false;
+  }
+
+  const bt_addr_le_t* local = (info.le.src != nullptr) ? info.le.src : info.le.local;
+  const bt_addr_le_t* peer = (info.le.dst != nullptr) ? info.le.dst : info.le.remote;
+  if (local == nullptr || peer == nullptr) {
+    return false;
+  }
+
+  memset(outRecord, 0, sizeof(*outRecord));
+  memcpy(outRecord->localAddress, local->a.val, sizeof(outRecord->localAddress));
+  outRecord->localAddressRandom = (local->type == BT_ADDR_LE_RANDOM) ? 1U : 0U;
+  memcpy(outRecord->peerAddress, peer->a.val, sizeof(outRecord->peerAddress));
+  outRecord->peerAddressRandom = (peer->type == BT_ADDR_LE_RANDOM) ? 1U : 0U;
+
+  const uint8_t keySize = bt_conn_enc_key_size(conn);
+  if (keySize >= 7U && keySize <= 16U) {
+    outRecord->keySize = keySize;
+  }
+
+  if (outIdentityId != nullptr) {
+    *outIdentityId = info.id;
+  }
+
+  return true;
+}
+
+bool refreshCachedBondRecordFromConn(const bt_conn* conn, bool requireBondedPeer,
+                                     bool invokeSave) {
+  BleBondRecord record{};
+  uint8_t identityId = BT_ID_DEFAULT;
+  if (!buildBondRecordFromConn(conn, &record, &identityId)) {
+    return false;
+  }
+
+  bt_addr_le_t peer;
+  memset(&peer, 0, sizeof(peer));
+  peer.type = record.peerAddressRandom ? BT_ADDR_LE_RANDOM : BT_ADDR_LE_PUBLIC;
+  memcpy(peer.a.val, record.peerAddress, sizeof(record.peerAddress));
+
+  if (requireBondedPeer && !bt_le_bond_exists(identityId, &peer)) {
+    return false;
+  }
+
+  return cacheBondRecord(record, identityId, invokeSave);
+}
+
+struct BondLookupContext {
+  bool found;
+  bt_addr_le_t peer;
+};
+
+void findFirstBondCallback(const bt_bond_info* info, void* userData) {
+  if (info == nullptr || userData == nullptr) {
+    return;
+  }
+
+  auto* context = static_cast<BondLookupContext*>(userData);
+  if (context->found) {
+    return;
+  }
+
+  context->found = true;
+  context->peer = info->addr;
+}
+
+bool loadBondRecordFromIdentity(uint8_t identityId, BleBondRecord* outRecord) {
+  if (outRecord == nullptr) {
+    return false;
+  }
+
+  BondLookupContext context{};
+  bt_foreach_bond(identityId, findFirstBondCallback, &context);
+  if (!context.found) {
+    return false;
+  }
+
+  bt_addr_le_t local;
+  memset(&local, 0, sizeof(local));
+  if (!getIdentityAddressById(identityId, &local)) {
+    return false;
+  }
+
+  memset(outRecord, 0, sizeof(*outRecord));
+  memcpy(outRecord->localAddress, local.a.val, sizeof(outRecord->localAddress));
+  outRecord->localAddressRandom = (local.type == BT_ADDR_LE_RANDOM) ? 1U : 0U;
+  memcpy(outRecord->peerAddress, context.peer.a.val, sizeof(outRecord->peerAddress));
+  outRecord->peerAddressRandom = (context.peer.type == BT_ADDR_LE_RANDOM) ? 1U : 0U;
+  return true;
+}
 
 uint16_t bleIntervalUnitsFromInfo(const bt_conn_info& info) {
   if (info.type != BT_CONN_TYPE_LE) {
@@ -895,6 +1145,7 @@ void bleLinkDisconnectedCallback(struct bt_conn* conn, uint8_t reason) {
       (reason != BT_HCI_ERR_LOCALHOST_TERM_CONN);
   g_bleLinkState.parameterUpdatePending = false;
   clearBlePendingRx();
+  clearPendingPairingConfirm();
 
   if (g_bleLinkState.conn != nullptr) {
     bt_conn_unref(g_bleLinkState.conn);
@@ -923,6 +1174,35 @@ void bleLinkSecurityChangedCallback(struct bt_conn* conn,
 }
 #endif
 
+void blePairingCompleteCallback(struct bt_conn* conn, bool bonded) {
+  (void)conn;
+  (void)bonded;
+  clearPendingPairingConfirm();
+}
+
+void blePairingFailedCallback(struct bt_conn* conn, enum bt_security_err reason) {
+  (void)conn;
+  (void)reason;
+  clearPendingPairingConfirm();
+}
+
+void bleAuthCancelCallback(struct bt_conn* conn) {
+  (void)conn;
+  clearPendingPairingConfirm();
+}
+
+void bleAuthPairingConfirmCallback(struct bt_conn* conn) {
+  queuePendingPairingConfirm(conn);
+}
+
+void bleBondDeletedCallback(uint8_t id, const bt_addr_le_t* peer) {
+  (void)peer;
+  if (g_bleSecurityState.bondRecordValid && g_bleSecurityState.localIdentityValid &&
+      g_bleSecurityState.localIdentityId == id) {
+    clearCachedBondRecord();
+  }
+}
+
 void ensureBleLinkCallbacksRegistered() {
   if (g_bleLinkState.callbacksRegistered) {
     return;
@@ -940,6 +1220,32 @@ void ensureBleLinkCallbacksRegistered() {
   }
 }
 
+void ensureBleSecurityCallbacksRegistered() {
+  if (g_bleSecurityState.authCallbacksRegistered &&
+      g_bleSecurityState.authInfoCallbacksRegistered) {
+    return;
+  }
+
+  if (!g_bleSecurityState.authCallbacksRegistered) {
+    memset(&g_bleAuthCallbacks, 0, sizeof(g_bleAuthCallbacks));
+    g_bleAuthCallbacks.cancel = bleAuthCancelCallback;
+    g_bleAuthCallbacks.pairing_confirm = bleAuthPairingConfirmCallback;
+    if (bt_conn_auth_cb_register(&g_bleAuthCallbacks) == 0) {
+      g_bleSecurityState.authCallbacksRegistered = true;
+    }
+  }
+
+  if (!g_bleSecurityState.authInfoCallbacksRegistered) {
+    memset(&g_bleAuthInfoCallbacks, 0, sizeof(g_bleAuthInfoCallbacks));
+    g_bleAuthInfoCallbacks.pairing_complete = blePairingCompleteCallback;
+    g_bleAuthInfoCallbacks.pairing_failed = blePairingFailedCallback;
+    g_bleAuthInfoCallbacks.bond_deleted = bleBondDeletedCallback;
+    if (bt_conn_auth_info_cb_register(&g_bleAuthInfoCallbacks) == 0) {
+      g_bleSecurityState.authInfoCallbacksRegistered = true;
+    }
+  }
+}
+
 uint32_t bleSyntheticEventIntervalMs() {
   uint16_t intervalUnits = g_bleLinkState.intervalUnits;
   if (intervalUnits == 0U) {
@@ -953,6 +1259,7 @@ uint32_t bleSyntheticEventIntervalMs() {
   return intervalMs;
 }
 
+#if !defined(CONFIG_BT_BAS)
 bool queueBleAttNotification(const struct bt_gatt_attr* attr,
                              const uint8_t* value,
                              uint8_t valueLength) {
@@ -971,6 +1278,7 @@ bool queueBleAttNotification(const struct bt_gatt_attr* attr,
                             &g_bleLinkState.pendingTxAttOpcode, 0x1BU, handle,
                             value, valueLength);
 }
+#endif
 
 bool bleVisibleConnectionActive() {
   return g_bleLinkState.connected || g_bleLinkState.disconnectEventPending;
@@ -5280,6 +5588,7 @@ BleRadio::BleRadio(uint32_t radioBase, uint32_t ficrBase)
 bool BleRadio::begin(int8_t txPowerDbm) {
   txPowerDbm_ = txPowerDbm;
   ensureBleLinkCallbacksRegistered();
+  ensureBleSecurityCallbacksRegistered();
   if (!BLE.begin(effectiveLocalName())) {
     initialized_ = false;
     return false;
@@ -5348,6 +5657,8 @@ bool BleRadio::setDeviceAddress(const uint8_t address[6], BleAddressType type) {
   addressType_ = type;
   addressConfigured_ = true;
   advertisingIdentityDirty_ = true;
+  g_bleSecurityState.localIdentityValid = false;
+  clearCachedBondRecord();
   return buildAdvertisingPacket() && buildScanResponsePacket();
 }
 
@@ -6101,13 +6412,18 @@ bool BleRadio::setGattBatteryLevel(uint8_t percent) {
 #endif
 }
 
-bool BleRadio::isConnected() const { return bleVisibleConnectionActive(); }
+bool BleRadio::isConnected() const {
+  servicePendingBleSecurityActions();
+  return bleVisibleConnectionActive();
+}
 
 bool BleRadio::isConnectionEncrypted() const {
+  servicePendingBleSecurityActions();
   return g_bleLinkState.connected && g_bleLinkState.encrypted;
 }
 
 bool BleRadio::getConnectionInfo(BleConnectionInfo* info) const {
+  servicePendingBleSecurityActions();
   if (info == nullptr || !bleVisibleConnectionActive()) {
     return false;
   }
@@ -6129,14 +6445,181 @@ bool BleRadio::getConnectionInfo(BleConnectionInfo* info) const {
   return true;
 }
 
-bool BleRadio::pollConnectionEvent(BleConnectionEvent* event, uint32_t spinLimit) {
-  if (event == nullptr) {
+void BleRadio::getEncryptionDebugCounters(BleEncryptionDebugCounters* out) const {
+  if (out == nullptr) {
+    return;
+  }
+
+  *out = g_bleSecurityState.encDebug;
+}
+
+void BleRadio::clearEncryptionDebugCounters() {
+  memset(&g_bleSecurityState.encDebug, 0, sizeof(g_bleSecurityState.encDebug));
+}
+
+bool BleRadio::hasBondRecord() const {
+  if (g_bleSecurityState.bondRecordValid) {
+    return true;
+  }
+
+  BleBondRecord record{};
+  return getBondRecord(&record);
+}
+
+bool BleRadio::getBondRecord(BleBondRecord* outRecord) const {
+  servicePendingBleSecurityActions();
+  if (outRecord == nullptr) {
     return false;
+  }
+
+  uint8_t identityId = BT_ID_DEFAULT;
+  const bool haveIdentity = resolveLocalIdentityId(&identityId);
+
+  if (g_bleLinkState.conn != nullptr &&
+      refreshCachedBondRecordFromConn(g_bleLinkState.conn, true, false)) {
+    *outRecord = g_bleSecurityState.bondRecord;
+    return true;
+  }
+
+  if (g_bleSecurityState.bondRecordValid &&
+      (!haveIdentity || !g_bleSecurityState.localIdentityValid ||
+       (g_bleSecurityState.localIdentityId == identityId))) {
+    *outRecord = g_bleSecurityState.bondRecord;
+    return true;
+  }
+
+  if (g_bleSecurityState.bondLoadCallback != nullptr) {
+    BleBondRecord record{};
+    if (g_bleSecurityState.bondLoadCallback(&record,
+                                            g_bleSecurityState.bondCallbackContext)) {
+      g_bleSecurityState.bondRecord = record;
+      g_bleSecurityState.bondRecordValid = true;
+      *outRecord = g_bleSecurityState.bondRecord;
+      return true;
+    }
+  }
+
+  if (!haveIdentity) {
+    if (g_bleLinkState.conn == nullptr) {
+      return false;
+    }
+
+    bt_conn_info info;
+    memset(&info, 0, sizeof(info));
+    if (bt_conn_get_info(g_bleLinkState.conn, &info) != 0 ||
+        info.type != BT_CONN_TYPE_LE) {
+      return false;
+    }
+    identityId = info.id;
+  }
+
+  BleBondRecord record{};
+  if (!loadBondRecordFromIdentity(identityId, &record)) {
+    return false;
+  }
+
+  if (!cacheBondRecord(record, identityId, false)) {
+    return false;
+  }
+
+  *outRecord = g_bleSecurityState.bondRecord;
+  return true;
+}
+
+bool BleRadio::clearBondRecord(bool clearPersistentStorage) {
+  bool callbackOk = true;
+  if (g_bleSecurityState.bondClearCallback != nullptr) {
+    callbackOk =
+        g_bleSecurityState.bondClearCallback(g_bleSecurityState.bondCallbackContext);
+  }
+
+  if (clearPersistentStorage) {
+    uint8_t identityId = BT_ID_DEFAULT;
+    const bool haveIdentity = resolveLocalIdentityId(&identityId);
+
+    bt_addr_le_t peer;
+    bt_addr_le_t* peerPtr = nullptr;
+    if (g_bleSecurityState.bondRecordValid) {
+      memset(&peer, 0, sizeof(peer));
+      peer.type = g_bleSecurityState.bondRecord.peerAddressRandom
+                      ? BT_ADDR_LE_RANDOM
+                      : BT_ADDR_LE_PUBLIC;
+      memcpy(peer.a.val, g_bleSecurityState.bondRecord.peerAddress,
+             sizeof(g_bleSecurityState.bondRecord.peerAddress));
+      peerPtr = &peer;
+    }
+
+    if (haveIdentity) {
+      (void)bt_unpair(identityId, peerPtr);
+    } else {
+      (void)bt_unpair(BT_ID_DEFAULT, peerPtr);
+    }
+  }
+
+  clearCachedBondRecord();
+  bleTraceLog("bond-cleared");
+  return callbackOk;
+}
+
+void BleRadio::setBondPersistenceCallbacks(BleBondLoadCallback loadCallback,
+                                           BleBondSaveCallback saveCallback,
+                                           BleBondClearCallback clearCallback,
+                                           void* context) {
+  g_bleSecurityState.bondLoadCallback = loadCallback;
+  g_bleSecurityState.bondSaveCallback = saveCallback;
+  g_bleSecurityState.bondClearCallback = clearCallback;
+  g_bleSecurityState.bondCallbackContext = context;
+}
+
+void BleRadio::setTraceCallback(BleTraceCallback callback, void* context) {
+  g_bleSecurityState.traceCallback = callback;
+  g_bleSecurityState.traceContext = context;
+}
+
+bool BleRadio::getLastDisconnectReason(uint8_t* outReason, bool* outRemote) const {
+  servicePendingBleSecurityActions();
+  if (outReason == nullptr || !g_bleLinkState.disconnectReasonValid) {
+    return false;
+  }
+
+  *outReason = g_bleLinkState.disconnectReason;
+  if (outRemote != nullptr) {
+    *outRemote = g_bleLinkState.disconnectReasonRemote;
+  }
+  return true;
+}
+
+bool BleRadio::disconnect(uint32_t spinLimit) {
+  servicePendingBleSecurityActions();
+  if (g_bleLinkState.conn == nullptr) {
+    return false;
+  }
+
+  if (bt_conn_disconnect(g_bleLinkState.conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN) != 0) {
+    return false;
+  }
+
+  const uint32_t deadlineMs = millis() + bleScanWindowMsFromSpin(spinLimit, 10U, 750U);
+  while (static_cast<int32_t>(millis() - deadlineMs) < 0) {
+    if (!g_bleLinkState.connected) {
+      return true;
+    }
+    delay(1);
+  }
+
+  return !g_bleLinkState.connected;
+}
+
+bool BleRadio::pollConnectionEvent(BleConnectionEvent* event, uint32_t spinLimit) {
+  BleConnectionEvent scratch{};
+  if (event == nullptr) {
+    event = &scratch;
   }
 
   memset(event, 0, sizeof(*event));
   const uint32_t deadlineMs = millis() + bleScanWindowMsFromSpin(spinLimit, 10U, 750U);
   while (static_cast<int32_t>(millis() - deadlineMs) < 0) {
+    servicePendingBleSecurityActions();
     if (g_bleLinkState.disconnectEventPending) {
       event->eventStarted = true;
       event->terminateInd = true;
@@ -6337,6 +6820,24 @@ bool BleRadio::scanActiveCycle(BleActiveScanResult* result,
   return true;
 }
 
+bool BleRadio::resolveLocalIdentityId(uint8_t* outIdentityId) const {
+  if (outIdentityId == nullptr) {
+    return false;
+  }
+
+  if (!addressConfigured_) {
+    *outIdentityId = BT_ID_DEFAULT;
+    return true;
+  }
+
+  if (customAdvertisingIdentity_) {
+    *outIdentityId = advertisingIdentityId_;
+    return true;
+  }
+
+  return findIdentityIdByAddress(address_, addressType_, outIdentityId);
+}
+
 bool BleRadio::ensureAdvertisingIdentity() {
   if (!initialized_ && !begin(txPowerDbm_)) {
     return false;
@@ -6347,6 +6848,14 @@ bool BleRadio::ensureAdvertisingIdentity() {
     return true;
   }
   if (!advertisingIdentityDirty_) {
+    return true;
+  }
+
+  uint8_t existingIdentityId = BT_ID_DEFAULT;
+  if (findIdentityIdByAddress(address_, addressType_, &existingIdentityId)) {
+    advertisingIdentityId_ = existingIdentityId;
+    customAdvertisingIdentity_ = true;
+    advertisingIdentityDirty_ = false;
     return true;
   }
 
@@ -6378,6 +6887,7 @@ bool BleRadio::advertiseEvent(uint32_t interChannelDelayUs, uint32_t spinLimit) 
   (void)radioBase_;
   (void)ficrBase_;
 
+  servicePendingBleSecurityActions();
   if (!initialized_ && !begin(txPowerDbm_)) {
     return false;
   }
@@ -6458,6 +6968,7 @@ bool BleRadio::advertiseInteractEvent(BleAdvInteraction* interaction,
   (void)radioBase_;
   (void)ficrBase_;
 
+  servicePendingBleSecurityActions();
   if (!initialized_ && !begin(txPowerDbm_)) {
     return false;
   }

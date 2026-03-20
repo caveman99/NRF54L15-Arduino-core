@@ -11,6 +11,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
 // --- BLEUuid Implementation ---
@@ -105,6 +106,7 @@ volatile bool g_hasScanResult = false;
 volatile int g_lastRssi = -127;
 char g_lastAddress[32];
 char g_lastName[32];
+bool g_btSettingsLoaded = false;
 
 bool adNameParser(struct bt_data *data, void *user_data)
 {
@@ -253,6 +255,17 @@ bool BluetoothClass::begin(const char *deviceName)
         _lastError = err;
         return false;
     }
+
+#if defined(CONFIG_BT_SETTINGS)
+    if (!g_btSettingsLoaded) {
+        err = settings_load();
+        if (err != 0) {
+            _lastError = err;
+            return false;
+        }
+        g_btSettingsLoaded = true;
+    }
+#endif
 
     if (deviceName != nullptr && strlen(deviceName) > 0) {
         (void)bt_set_name(deviceName);
