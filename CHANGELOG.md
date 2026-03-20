@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.8 - 2026-03-20
+
+- Added the next clean-core parity wrappers for SPIS, QDEC, and I2S plus the
+  required register definitions and CMSIS compatibility headers for the Seeed
+  Zephyr core.
+- Copied the next clean-core peripheral examples into the packaged Zephyr core:
+  `I2sTxWrapperInterrupt`, `I2sRxWrapperInterrupt`,
+  `I2sDuplexWrapperInterrupt`, `RawI2sTxInterrupt`,
+  `QdecRotaryReporter`, and `SpisTargetEcho`.
+- Enabled Zephyr dynamic interrupts in the packaged base config and routed
+  `I2S20_IRQn` through a shared Zephyr-owned connection for both the wrapper
+  helpers and the raw I2S example, fixing the previous
+  `Unhandled IRQn: 221` runtime failure after upload.
+- Verified the new I2S paths on hardware with forced `pyocd` upload/reset:
+  `RawI2sTxInterrupt`, `I2sTxWrapperInterrupt`, and
+  `I2sDuplexWrapperInterrupt` all boot and advance their expected IRQ counters.
+
 ## 0.1.7 - 2026-03-19
 
 - Added bundled clean-compat integration into the Seeed Zephyr core so

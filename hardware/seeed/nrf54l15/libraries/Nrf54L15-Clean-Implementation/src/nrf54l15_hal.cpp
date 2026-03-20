@@ -12,14 +12,41 @@
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/irq.h>
 #include <zephyr/random/random.h>
 
 namespace {
 
+using namespace nrf54l15;
 using namespace xiao_nrf54l15;
 
 CpuFrequency g_idleCpuFrequency = CpuFrequency::k64MHz;
 bool g_idleCpuScalingEnabled = false;
+xiao_nrf54l15::I2sTx* g_activeI2sTx = nullptr;
+xiao_nrf54l15::I2sRx* g_activeI2sRx = nullptr;
+xiao_nrf54l15::I2sDuplex* g_activeI2sDuplex = nullptr;
+void (*g_i2sRawHandler)() = nullptr;
+bool g_i2sIrqConnected = false;
+
+void i2sSharedZephyrIsr(const void*) {
+  if (g_i2sRawHandler != nullptr) {
+    g_i2sRawHandler();
+  } else if (g_activeI2sDuplex != nullptr) {
+    g_activeI2sDuplex->onIrq();
+  } else if (g_activeI2sRx != nullptr) {
+    g_activeI2sRx->onIrq();
+  } else if (g_activeI2sTx != nullptr) {
+    g_activeI2sTx->onIrq();
+  }
+}
+
+void ensureI2sIrqConnected(uint8_t priority) {
+  if (!g_i2sIrqConnected) {
+    (void)irq_connect_dynamic(I2S20_IRQn, priority, i2sSharedZephyrIsr, nullptr, 0);
+    g_i2sIrqConnected = true;
+  }
+  irq_enable(I2S20_IRQn);
+}
 
 NRF_GPIO_Type* gpioForPort(uint8_t port) {
   switch (port) {
@@ -190,6 +217,32 @@ uint32_t makeLpcompPinSelect(const Pin& pin) {
           LPCOMP_PSEL_PORT_Msk);
 }
 
+bool waitForNonZero(volatile uint32_t* reg, uint32_t spinLimit) {
+  if (reg == nullptr) {
+    return false;
+  }
+
+  while (spinLimit-- > 0U) {
+    if (*reg != 0U) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint32_t makeQdecConnectedPinSelect(const Pin& pin) {
+  if (!isConnected(pin)) {
+    return PSEL_DISCONNECTED;
+  }
+
+  return ((static_cast<uint32_t>(pin.pin) << QDEC_PSEL_A_PIN_Pos) &
+          QDEC_PSEL_A_PIN_Msk) |
+         ((static_cast<uint32_t>(pin.port) << QDEC_PSEL_A_PORT_Pos) &
+          QDEC_PSEL_A_PORT_Msk) |
+         ((QDEC_PSEL_A_CONNECT_Connected << QDEC_PSEL_A_CONNECT_Pos) &
+          QDEC_PSEL_A_CONNECT_Msk);
+}
+
 uint16_t clampPermille(uint16_t permille) {
   return (permille > 1000U) ? 1000U : permille;
 }
@@ -219,16 +272,19 @@ uint32_t compThresholdRegValue(uint16_t lowPermille, uint16_t highPermille) {
 }
 
 bool waitForCompReady(volatile uint32_t* readyEvent, uint32_t spinLimit) {
-  if (readyEvent == nullptr) {
-    return false;
-  }
+  return waitForNonZero(readyEvent, spinLimit);
+}
 
-  while (spinLimit-- > 0U) {
-    if (*readyEvent != 0U) {
-      return true;
-    }
+GpioPull gpioPullFromQdecInputPull(QdecInputPull pull) {
+  switch (pull) {
+    case QdecInputPull::kPullDown:
+      return GpioPull::kPullDown;
+    case QdecInputPull::kPullUp:
+      return GpioPull::kPullUp;
+    case QdecInputPull::kDisabled:
+    default:
+      return GpioPull::kDisabled;
   }
-  return false;
 }
 
 LpcompReference nearestLpcompReference(uint16_t thresholdPermille) {
@@ -1024,6 +1080,202 @@ bool Spim::transfer(const uint8_t* tx,
 
   SPI.transfer(tx, rx, len);
   return true;
+}
+
+Spis::Spis(uint32_t base)
+    : spis_(reinterpret_cast<NRF_SPIS_Type*>(static_cast<uintptr_t>(base))),
+      active_(false) {}
+
+bool Spis::begin(const Pin& sck,
+                 const Pin& mosi,
+                 const Pin& miso,
+                 const Pin& csn,
+                 SpiMode mode,
+                 bool lsbFirst,
+                 uint8_t defaultChar,
+                 uint8_t overReadChar,
+                 bool autoAcquireAfterEnd) {
+  if (!isConnected(sck) || !isConnected(mosi) || !isConnected(miso) ||
+      !isConnected(csn)) {
+    return false;
+  }
+
+  if (!Gpio::configure(sck, GpioDirection::kInput, GpioPull::kDisabled) ||
+      !Gpio::configure(mosi, GpioDirection::kInput, GpioPull::kDisabled) ||
+      !Gpio::configure(miso, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(csn, GpioDirection::kInput, GpioPull::kPullUp) ||
+      !Gpio::write(miso, true)) {
+    return false;
+  }
+
+  spis_->ENABLE = (SPIS_ENABLE_ENABLE_Disabled << SPIS_ENABLE_ENABLE_Pos);
+  spis_->PSEL.SCK = make_psel(sck.port, sck.pin);
+  spis_->PSEL.MOSI = make_psel(mosi.port, mosi.pin);
+  spis_->PSEL.MISO = make_psel(miso.port, miso.pin);
+  spis_->PSEL.CSN = make_psel(csn.port, csn.pin);
+
+  uint32_t config = 0U;
+  if (lsbFirst) {
+    config |= (SPIS_CONFIG_ORDER_LsbFirst << SPIS_CONFIG_ORDER_Pos) &
+              SPIS_CONFIG_ORDER_Msk;
+  }
+  if (mode == SpiMode::kMode1 || mode == SpiMode::kMode3) {
+    config |= (SPIS_CONFIG_CPHA_Trailing << SPIS_CONFIG_CPHA_Pos) &
+              SPIS_CONFIG_CPHA_Msk;
+  }
+  if (mode == SpiMode::kMode2 || mode == SpiMode::kMode3) {
+    config |= (SPIS_CONFIG_CPOL_ActiveLow << SPIS_CONFIG_CPOL_Pos) &
+              SPIS_CONFIG_CPOL_Msk;
+  }
+
+  spis_->CONFIG = config;
+  spis_->DEF = ((static_cast<uint32_t>(defaultChar) << SPIS_DEF_DEF_Pos) &
+                SPIS_DEF_DEF_Msk);
+  spis_->ORC = ((static_cast<uint32_t>(overReadChar) << SPIS_ORC_ORC_Pos) &
+                SPIS_ORC_ORC_Msk);
+  spis_->SHORTS =
+      autoAcquireAfterEnd
+          ? ((SPIS_SHORTS_END_ACQUIRE_Enabled << SPIS_SHORTS_END_ACQUIRE_Pos) &
+             SPIS_SHORTS_END_ACQUIRE_Msk)
+          : 0U;
+  spis_->INTENCLR = 0xFFFFFFFFUL;
+  spis_->EVENTS_END = 0U;
+  spis_->EVENTS_ACQUIRED = 0U;
+  spis_->EVENTS_DMA.RX.END = 0U;
+  spis_->EVENTS_DMA.TX.END = 0U;
+
+  spis_->ENABLE = ((SPIS_ENABLE_ENABLE_Enabled << SPIS_ENABLE_ENABLE_Pos) &
+                   SPIS_ENABLE_ENABLE_Msk);
+  active_ = true;
+  clearStatus();
+  return true;
+}
+
+bool Spis::acquire(uint32_t spinLimit) {
+  if (!active_) {
+    return false;
+  }
+  if ((spis_->SEMSTAT & SPIS_SEMSTAT_SEMSTAT_Msk) ==
+      (SPIS_SEMSTAT_SEMSTAT_CPU << SPIS_SEMSTAT_SEMSTAT_Pos)) {
+    return true;
+  }
+
+  spis_->EVENTS_ACQUIRED = 0U;
+  spis_->TASKS_ACQUIRE = SPIS_TASKS_ACQUIRE_TASKS_ACQUIRE_Trigger;
+  while (spinLimit-- > 0U) {
+    if ((spis_->SEMSTAT & SPIS_SEMSTAT_SEMSTAT_Msk) ==
+        (SPIS_SEMSTAT_SEMSTAT_CPU << SPIS_SEMSTAT_SEMSTAT_Pos)) {
+      return true;
+    }
+    if (spis_->EVENTS_ACQUIRED != 0U) {
+      spis_->EVENTS_ACQUIRED = 0U;
+      return true;
+    }
+  }
+
+  return (spis_->SEMSTAT & SPIS_SEMSTAT_SEMSTAT_Msk) ==
+         (SPIS_SEMSTAT_SEMSTAT_CPU << SPIS_SEMSTAT_SEMSTAT_Pos);
+}
+
+bool Spis::setBuffers(uint8_t* rx,
+                      size_t rxLen,
+                      const uint8_t* tx,
+                      size_t txLen,
+                      uint32_t spinLimit) {
+  if (!active_ || rx == nullptr || tx == nullptr || rxLen == 0U || txLen == 0U ||
+      rxLen > 0xFFFFU || txLen > 0xFFFFU) {
+    return false;
+  }
+  if (!acquire(spinLimit)) {
+    return false;
+  }
+
+  spis_->DMA.RX.PTR = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rx));
+  spis_->DMA.RX.MAXCNT =
+      (static_cast<uint32_t>(rxLen) << SPIS_DMA_RX_MAXCNT_MAXCNT_Pos) &
+      SPIS_DMA_RX_MAXCNT_MAXCNT_Msk;
+  spis_->DMA.TX.PTR = static_cast<uint32_t>(
+      reinterpret_cast<uintptr_t>(const_cast<uint8_t*>(tx)));
+  spis_->DMA.TX.MAXCNT =
+      (static_cast<uint32_t>(txLen) << SPIS_DMA_TX_MAXCNT_MAXCNT_Pos) &
+      SPIS_DMA_TX_MAXCNT_MAXCNT_Msk;
+
+  spis_->EVENTS_END = 0U;
+  spis_->EVENTS_DMA.RX.END = 0U;
+  spis_->EVENTS_DMA.TX.END = 0U;
+  clearStatus();
+  return true;
+}
+
+bool Spis::releaseTransaction() {
+  if (!active_) {
+    return false;
+  }
+  spis_->TASKS_RELEASE = SPIS_TASKS_RELEASE_TASKS_RELEASE_Trigger;
+  return true;
+}
+
+bool Spis::pollAcquired(bool clearEventFlag) {
+  const bool fired = active_ && (spis_->EVENTS_ACQUIRED != 0U);
+  if (fired && clearEventFlag) {
+    spis_->EVENTS_ACQUIRED = 0U;
+  }
+  return fired;
+}
+
+bool Spis::pollEnd(bool clearEventFlag) {
+  const bool fired = active_ && (spis_->EVENTS_END != 0U);
+  if (fired && clearEventFlag) {
+    spis_->EVENTS_END = 0U;
+  }
+  return fired;
+}
+
+size_t Spis::receivedBytes() const {
+  if (!active_) {
+    return 0U;
+  }
+  return static_cast<size_t>(
+      (spis_->DMA.RX.AMOUNT & SPIS_DMA_RX_AMOUNT_AMOUNT_Msk) >>
+      SPIS_DMA_RX_AMOUNT_AMOUNT_Pos);
+}
+
+size_t Spis::transmittedBytes() const {
+  if (!active_) {
+    return 0U;
+  }
+  return static_cast<size_t>(
+      (spis_->DMA.TX.AMOUNT & SPIS_DMA_TX_AMOUNT_AMOUNT_Msk) >>
+      SPIS_DMA_TX_AMOUNT_AMOUNT_Pos);
+}
+
+bool Spis::overflowed() const {
+  return active_ && ((spis_->STATUS & SPIS_STATUS_OVERFLOW_Msk) != 0U);
+}
+
+bool Spis::overread() const {
+  return active_ && ((spis_->STATUS & SPIS_STATUS_OVERREAD_Msk) != 0U);
+}
+
+void Spis::clearStatus() {
+  if (spis_ == nullptr) {
+    return;
+  }
+  spis_->STATUS = SPIS_STATUS_OVERREAD_Clear | SPIS_STATUS_OVERFLOW_Clear;
+}
+
+void Spis::end() {
+  if (spis_ == nullptr) {
+    return;
+  }
+
+  spis_->SHORTS = 0U;
+  spis_->ENABLE = (SPIS_ENABLE_ENABLE_Disabled << SPIS_ENABLE_ENABLE_Pos);
+  spis_->PSEL.SCK = PSEL_DISCONNECTED;
+  spis_->PSEL.MOSI = PSEL_DISCONNECTED;
+  spis_->PSEL.MISO = PSEL_DISCONNECTED;
+  spis_->PSEL.CSN = PSEL_DISCONNECTED;
+  active_ = false;
 }
 
 Twim::Twim(uint32_t base) : base_(base), wire_(nullptr), active_(false) {}
@@ -2462,6 +2714,174 @@ void Lpcomp::end() {
   releaseComparator(ComparatorOwner::kLpcomp);
 }
 
+Qdec::Qdec(uint32_t base)
+    : qdec_(reinterpret_cast<NRF_QDEC_Type*>(static_cast<uintptr_t>(base))),
+      configured_(false) {}
+
+bool Qdec::begin(const Pin& pinA,
+                 const Pin& pinB,
+                 QdecSamplePeriod samplePeriod,
+                 QdecReportPeriod reportPeriod,
+                 bool debounce,
+                 QdecInputPull inputPull,
+                 const Pin& ledPin,
+                 QdecLedPolarity ledPolarity,
+                 uint16_t ledPreUs) {
+  if (configured_) {
+    end();
+  }
+
+  if (!isConnected(pinA) || !isConnected(pinB)) {
+    return false;
+  }
+  if ((pinA.port == pinB.port) && (pinA.pin == pinB.pin)) {
+    return false;
+  }
+
+  const GpioPull pull = gpioPullFromQdecInputPull(inputPull);
+  if (!Gpio::configure(pinA, GpioDirection::kInput, pull) ||
+      !Gpio::configure(pinB, GpioDirection::kInput, pull)) {
+    return false;
+  }
+  if (isConnected(ledPin) &&
+      !Gpio::configure(ledPin, GpioDirection::kOutput, GpioPull::kDisabled)) {
+    return false;
+  }
+
+  if (ledPreUs < QDEC_LEDPRE_LEDPRE_Min) {
+    ledPreUs = QDEC_LEDPRE_LEDPRE_Min;
+  }
+  if (ledPreUs > QDEC_LEDPRE_LEDPRE_Max) {
+    ledPreUs = QDEC_LEDPRE_LEDPRE_Max;
+  }
+
+  qdec_->TASKS_STOP = QDEC_TASKS_STOP_TASKS_STOP_Trigger;
+  qdec_->ENABLE = QDEC_ENABLE_ENABLE_Disabled;
+  qdec_->INTENCLR = 0xFFFFFFFFUL;
+  qdec_->SHORTS = 0U;
+  qdec_->EVENTS_SAMPLERDY = 0U;
+  qdec_->EVENTS_REPORTRDY = 0U;
+  qdec_->EVENTS_ACCOF = 0U;
+  qdec_->EVENTS_DBLRDY = 0U;
+  qdec_->EVENTS_STOPPED = 0U;
+
+  qdec_->PSEL.A = makeQdecConnectedPinSelect(pinA);
+  qdec_->PSEL.B = makeQdecConnectedPinSelect(pinB);
+  qdec_->PSEL.LED =
+      isConnected(ledPin) ? makeQdecConnectedPinSelect(ledPin)
+                          : PSEL_DISCONNECTED;
+  qdec_->LEDPOL =
+      ((static_cast<uint32_t>(ledPolarity) << QDEC_LEDPOL_LEDPOL_Pos) &
+       QDEC_LEDPOL_LEDPOL_Msk);
+  qdec_->SAMPLEPER =
+      ((static_cast<uint32_t>(samplePeriod) << QDEC_SAMPLEPER_SAMPLEPER_Pos) &
+       QDEC_SAMPLEPER_SAMPLEPER_Msk);
+  qdec_->REPORTPER =
+      ((static_cast<uint32_t>(reportPeriod) << QDEC_REPORTPER_REPORTPER_Pos) &
+       QDEC_REPORTPER_REPORTPER_Msk);
+  qdec_->DBFEN =
+      (((debounce ? QDEC_DBFEN_DBFEN_Enabled : QDEC_DBFEN_DBFEN_Disabled)
+        << QDEC_DBFEN_DBFEN_Pos) &
+       QDEC_DBFEN_DBFEN_Msk);
+  qdec_->LEDPRE = ((static_cast<uint32_t>(ledPreUs) << QDEC_LEDPRE_LEDPRE_Pos) &
+                   QDEC_LEDPRE_LEDPRE_Msk);
+
+  qdec_->ENABLE = ((QDEC_ENABLE_ENABLE_Enabled << QDEC_ENABLE_ENABLE_Pos) &
+                   QDEC_ENABLE_ENABLE_Msk);
+  configured_ = true;
+  return true;
+}
+
+void Qdec::end() {
+  qdec_->TASKS_STOP = QDEC_TASKS_STOP_TASKS_STOP_Trigger;
+  qdec_->ENABLE = QDEC_ENABLE_ENABLE_Disabled;
+  qdec_->PSEL.A = PSEL_DISCONNECTED;
+  qdec_->PSEL.B = PSEL_DISCONNECTED;
+  qdec_->PSEL.LED = PSEL_DISCONNECTED;
+  qdec_->EVENTS_SAMPLERDY = 0U;
+  qdec_->EVENTS_REPORTRDY = 0U;
+  qdec_->EVENTS_ACCOF = 0U;
+  qdec_->EVENTS_DBLRDY = 0U;
+  qdec_->EVENTS_STOPPED = 0U;
+  configured_ = false;
+}
+
+void Qdec::start() {
+  if (configured_) {
+    qdec_->TASKS_START = QDEC_TASKS_START_TASKS_START_Trigger;
+  }
+}
+
+void Qdec::stop() {
+  if (configured_) {
+    qdec_->TASKS_STOP = QDEC_TASKS_STOP_TASKS_STOP_Trigger;
+  }
+}
+
+int32_t Qdec::sampleValue() const { return qdec_->SAMPLE; }
+
+int32_t Qdec::accumulator() const { return qdec_->ACC; }
+
+int32_t Qdec::readAndClearAccumulator() {
+  if (!configured_) {
+    return 0;
+  }
+  qdec_->TASKS_RDCLRACC = QDEC_TASKS_RDCLRACC_TASKS_RDCLRACC_Trigger;
+  __asm volatile("dsb 0xF" ::: "memory");
+  return qdec_->ACCREAD;
+}
+
+uint32_t Qdec::doubleTransitions() const { return qdec_->ACCDBL; }
+
+uint32_t Qdec::readAndClearDoubleTransitions() {
+  if (!configured_) {
+    return 0U;
+  }
+  qdec_->TASKS_RDCLRDBL = QDEC_TASKS_RDCLRDBL_TASKS_RDCLRDBL_Trigger;
+  __asm volatile("dsb 0xF" ::: "memory");
+  return qdec_->ACCDBLREAD;
+}
+
+bool Qdec::pollSampleReady(bool clearEventFlag) {
+  const bool fired = (qdec_->EVENTS_SAMPLERDY != 0U);
+  if (fired && clearEventFlag) {
+    qdec_->EVENTS_SAMPLERDY = 0U;
+  }
+  return fired;
+}
+
+bool Qdec::pollReportReady(bool clearEventFlag) {
+  const bool fired = (qdec_->EVENTS_REPORTRDY != 0U);
+  if (fired && clearEventFlag) {
+    qdec_->EVENTS_REPORTRDY = 0U;
+  }
+  return fired;
+}
+
+bool Qdec::pollOverflow(bool clearEventFlag) {
+  const bool fired = (qdec_->EVENTS_ACCOF != 0U);
+  if (fired && clearEventFlag) {
+    qdec_->EVENTS_ACCOF = 0U;
+  }
+  return fired;
+}
+
+bool Qdec::pollDoubleReady(bool clearEventFlag) {
+  const bool fired = (qdec_->EVENTS_DBLRDY != 0U);
+  if (fired && clearEventFlag) {
+    qdec_->EVENTS_DBLRDY = 0U;
+  }
+  return fired;
+}
+
+bool Qdec::pollStopped(bool clearEventFlag) {
+  const bool fired = (qdec_->EVENTS_STOPPED != 0U);
+  if (fired && clearEventFlag) {
+    qdec_->EVENTS_STOPPED = 0U;
+  }
+  return fired;
+}
+
 bool BoardControl::setAntennaPath(BoardAntennaPath path) {
   switch (path) {
     case BoardAntennaPath::kExternal:
@@ -3190,6 +3610,818 @@ bool Pdm::capture(int16_t* samples, size_t sampleCount, uint32_t spinLimit) {
   }
 
   return offset == totalBytes;
+}
+
+I2sTx::I2sTx(uint32_t base)
+    : i2s_(reinterpret_cast<NRF_I2S_Type*>(static_cast<uintptr_t>(base))),
+      config_(),
+      buffers_{nullptr, nullptr},
+      wordCount_(0U),
+      refillCallback_(nullptr),
+      refillContext_(nullptr),
+      nextBufferIndex_(1U),
+      configured_(false),
+      running_(false),
+      restartPending_(false),
+      txPtrUpdCount_(0U),
+      stoppedCount_(0U),
+      restartCount_(0U),
+      manualStopCount_(0U) {}
+
+bool I2sTx::setBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount) {
+  if (buffer0 == nullptr || buffer1 == nullptr || wordCount == 0U) {
+    return false;
+  }
+  if ((reinterpret_cast<uintptr_t>(buffer0) & 0x3U) != 0U ||
+      (reinterpret_cast<uintptr_t>(buffer1) & 0x3U) != 0U) {
+    return false;
+  }
+  if (wordCount >
+      (I2S_RXTXD_MAXCNT_MAXCNT_Msk >> I2S_RXTXD_MAXCNT_MAXCNT_Pos)) {
+    return false;
+  }
+
+  buffers_[0] = buffer0;
+  buffers_[1] = buffer1;
+  wordCount_ = wordCount;
+  return true;
+}
+
+void I2sTx::setRefillCallback(RefillCallback callback, void* context) {
+  refillCallback_ = callback;
+  refillContext_ = context;
+}
+
+bool I2sTx::begin(const I2sTxConfig& config,
+                  uint32_t* buffer0,
+                  uint32_t* buffer1,
+                  uint32_t wordCount) {
+  if (i2s_ == nullptr || !setBuffers(buffer0, buffer1, wordCount)) {
+    return false;
+  }
+  if (!isConnected(config.mck) || !isConnected(config.sck) ||
+      !isConnected(config.lrck) || !isConnected(config.sdout)) {
+    return false;
+  }
+  if (!Gpio::configure(config.mck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.lrck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sdout, GpioDirection::kOutput, GpioPull::kDisabled)) {
+    return false;
+  }
+  if (isConnected(config.sdin) &&
+      !Gpio::configure(config.sdin, GpioDirection::kInput, GpioPull::kDisabled)) {
+    return false;
+  }
+
+  config_ = config;
+
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  i2s_->PSEL.MCK = make_psel(config_.mck.port, config_.mck.pin);
+  i2s_->PSEL.SCK = make_psel(config_.sck.port, config_.sck.pin);
+  i2s_->PSEL.LRCK = make_psel(config_.lrck.port, config_.lrck.pin);
+  i2s_->PSEL.SDIN =
+      isConnected(config_.sdin) ? make_psel(config_.sdin.port, config_.sdin.pin)
+                                : PSEL_DISCONNECTED;
+  i2s_->PSEL.SDOUT = make_psel(config_.sdout.port, config_.sdout.pin);
+
+  i2s_->CONFIG.MODE = (I2S_CONFIG_MODE_MODE_Master << I2S_CONFIG_MODE_MODE_Pos) &
+                      I2S_CONFIG_MODE_MODE_Msk;
+  i2s_->CONFIG.RXEN =
+      (I2S_CONFIG_RXEN_RXEN_Disabled << I2S_CONFIG_RXEN_RXEN_Pos) &
+      I2S_CONFIG_RXEN_RXEN_Msk;
+  i2s_->CONFIG.TXEN =
+      (I2S_CONFIG_TXEN_TXEN_Enabled << I2S_CONFIG_TXEN_TXEN_Pos) &
+      I2S_CONFIG_TXEN_TXEN_Msk;
+  i2s_->CONFIG.MCKEN =
+      ((config_.enableMasterClock ? I2S_CONFIG_MCKEN_MCKEN_Enabled
+                                  : I2S_CONFIG_MCKEN_MCKEN_Disabled)
+       << I2S_CONFIG_MCKEN_MCKEN_Pos) &
+      I2S_CONFIG_MCKEN_MCKEN_Msk;
+  i2s_->CONFIG.MCKFREQ = config_.mckFreq;
+  i2s_->CONFIG.RATIO =
+      (config_.ratio << I2S_CONFIG_RATIO_RATIO_Pos) & I2S_CONFIG_RATIO_RATIO_Msk;
+  i2s_->CONFIG.SWIDTH =
+      (config_.sampleWidth << I2S_CONFIG_SWIDTH_SWIDTH_Pos) &
+      I2S_CONFIG_SWIDTH_SWIDTH_Msk;
+  i2s_->CONFIG.ALIGN =
+      (config_.align << I2S_CONFIG_ALIGN_ALIGN_Pos) & I2S_CONFIG_ALIGN_ALIGN_Msk;
+  i2s_->CONFIG.FORMAT =
+      (config_.format << I2S_CONFIG_FORMAT_FORMAT_Pos) & I2S_CONFIG_FORMAT_FORMAT_Msk;
+  i2s_->CONFIG.CHANNELS =
+      (config_.channels << I2S_CONFIG_CHANNELS_CHANNELS_Pos) &
+      I2S_CONFIG_CHANNELS_CHANNELS_Msk;
+
+  i2s_->RXTXD.MAXCNT = (wordCount_ << I2S_RXTXD_MAXCNT_MAXCNT_Pos) &
+                       I2S_RXTXD_MAXCNT_MAXCNT_Msk;
+  i2s_->INTENCLR = I2S_INTENCLR_TXPTRUPD_Msk | I2S_INTENCLR_STOPPED_Msk;
+  clearEvents();
+  if (refillCallback_ != nullptr) {
+    refillCallback_(buffers_[0], wordCount_, refillContext_);
+    refillCallback_(buffers_[1], wordCount_, refillContext_);
+  }
+  armBuffer(0U);
+
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Enabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  ensureI2sIrqConnected(config_.irqPriority);
+
+  nextBufferIndex_ = 1U;
+  configured_ = true;
+  running_ = false;
+  restartPending_ = false;
+  txPtrUpdCount_ = 0U;
+  stoppedCount_ = 0U;
+  restartCount_ = 0U;
+  manualStopCount_ = 0U;
+  return true;
+}
+
+void I2sTx::end() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  i2s_->INTENCLR = I2S_INTENCLR_TXPTRUPD_Msk | I2S_INTENCLR_STOPPED_Msk;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  waitForNonZero(&i2s_->EVENTS_STOPPED, 300000UL);
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+  i2s_->PSEL.MCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.LRCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDIN = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDOUT = PSEL_DISCONNECTED;
+  if (g_activeI2sTx == this) {
+    g_activeI2sTx = nullptr;
+  }
+  configured_ = false;
+  running_ = false;
+  restartPending_ = false;
+}
+
+bool I2sTx::start() {
+  if (!configured_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  clearEvents();
+  nextBufferIndex_ = 1U;
+  armBuffer(0U);
+  i2s_->INTENSET = I2S_INTENSET_TXPTRUPD_Msk | I2S_INTENSET_STOPPED_Msk;
+  running_ = true;
+  restartPending_ = false;
+  i2s_->TASKS_START = I2S_TASKS_START_TASKS_START_Trigger;
+  return true;
+}
+
+bool I2sTx::stop() {
+  if (!configured_ || !running_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  ++manualStopCount_;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  return true;
+}
+
+void I2sTx::service() {
+  if (restartPending_ && config_.autoRestart) {
+    restartPending_ = false;
+    ++restartCount_;
+    (void)start();
+  }
+}
+
+void I2sTx::onIrq() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  if (i2s_->EVENTS_TXPTRUPD != 0U) {
+    i2s_->EVENTS_TXPTRUPD = 0U;
+    const uint8_t queuedIndex = nextBufferIndex_;
+    armBuffer(queuedIndex);
+    nextBufferIndex_ ^= 1U;
+    if (refillCallback_ != nullptr) {
+      refillCallback_(buffers_[nextBufferIndex_], wordCount_, refillContext_);
+    }
+    ++txPtrUpdCount_;
+  }
+
+  if (i2s_->EVENTS_STOPPED != 0U) {
+    i2s_->EVENTS_STOPPED = 0U;
+    running_ = false;
+    restartPending_ = true;
+    ++stoppedCount_;
+  }
+}
+
+bool I2sTx::makeActive() {
+  if (!configured_) {
+    return false;
+  }
+  g_activeI2sDuplex = nullptr;
+  g_activeI2sRx = nullptr;
+  g_i2sRawHandler = nullptr;
+  g_activeI2sTx = this;
+  return true;
+}
+
+void I2sTx::irqHandler() {
+  if (g_activeI2sTx != nullptr) {
+    g_activeI2sTx->onIrq();
+  }
+}
+
+bool I2sTx::configured() const { return configured_; }
+bool I2sTx::running() const { return running_; }
+bool I2sTx::restartPending() const { return restartPending_; }
+uint32_t I2sTx::txPtrUpdCount() const { return txPtrUpdCount_; }
+uint32_t I2sTx::stoppedCount() const { return stoppedCount_; }
+uint32_t I2sTx::restartCount() const { return restartCount_; }
+uint32_t I2sTx::manualStopCount() const { return manualStopCount_; }
+
+void I2sTx::clearEvents() {
+  i2s_->EVENTS_TXPTRUPD = 0U;
+  i2s_->EVENTS_STOPPED = 0U;
+}
+
+void I2sTx::armBuffer(uint8_t bufferIndex) {
+  const uint8_t index = bufferIndex & 1U;
+  i2s_->TXD.PTR =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(buffers_[index])) &
+      I2S_TXD_PTR_PTR_Msk;
+}
+
+I2sRx::I2sRx(uint32_t base)
+    : i2s_(reinterpret_cast<NRF_I2S_Type*>(static_cast<uintptr_t>(base))),
+      config_(),
+      buffers_{nullptr, nullptr},
+      wordCount_(0U),
+      receiveCallback_(nullptr),
+      receiveContext_(nullptr),
+      nextBufferIndex_(1U),
+      configured_(false),
+      running_(false),
+      restartPending_(false),
+      rxPtrUpdCount_(0U),
+      stoppedCount_(0U),
+      restartCount_(0U),
+      manualStopCount_(0U) {}
+
+bool I2sRx::setBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount) {
+  if (buffer0 == nullptr || buffer1 == nullptr || wordCount == 0U) {
+    return false;
+  }
+  if ((reinterpret_cast<uintptr_t>(buffer0) & 0x3U) != 0U ||
+      (reinterpret_cast<uintptr_t>(buffer1) & 0x3U) != 0U) {
+    return false;
+  }
+  if (wordCount >
+      (I2S_RXTXD_MAXCNT_MAXCNT_Msk >> I2S_RXTXD_MAXCNT_MAXCNT_Pos)) {
+    return false;
+  }
+
+  buffers_[0] = buffer0;
+  buffers_[1] = buffer1;
+  wordCount_ = wordCount;
+  return true;
+}
+
+void I2sRx::setReceiveCallback(ReceiveCallback callback, void* context) {
+  receiveCallback_ = callback;
+  receiveContext_ = context;
+}
+
+bool I2sRx::begin(const I2sRxConfig& config,
+                  uint32_t* buffer0,
+                  uint32_t* buffer1,
+                  uint32_t wordCount) {
+  if (i2s_ == nullptr || !setBuffers(buffer0, buffer1, wordCount)) {
+    return false;
+  }
+  if (!isConnected(config.mck) || !isConnected(config.sck) ||
+      !isConnected(config.lrck) || !isConnected(config.sdin)) {
+    return false;
+  }
+  if (!Gpio::configure(config.mck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.lrck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sdin, GpioDirection::kInput, GpioPull::kDisabled)) {
+    return false;
+  }
+  if (isConnected(config.sdout) &&
+      !Gpio::configure(config.sdout, GpioDirection::kOutput, GpioPull::kDisabled)) {
+    return false;
+  }
+
+  config_ = config;
+
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  i2s_->PSEL.MCK = make_psel(config_.mck.port, config_.mck.pin);
+  i2s_->PSEL.SCK = make_psel(config_.sck.port, config_.sck.pin);
+  i2s_->PSEL.LRCK = make_psel(config_.lrck.port, config_.lrck.pin);
+  i2s_->PSEL.SDIN = make_psel(config_.sdin.port, config_.sdin.pin);
+  i2s_->PSEL.SDOUT =
+      isConnected(config_.sdout) ? make_psel(config_.sdout.port, config_.sdout.pin)
+                                 : PSEL_DISCONNECTED;
+
+  i2s_->CONFIG.MODE = (I2S_CONFIG_MODE_MODE_Master << I2S_CONFIG_MODE_MODE_Pos) &
+                      I2S_CONFIG_MODE_MODE_Msk;
+  i2s_->CONFIG.RXEN =
+      (I2S_CONFIG_RXEN_RXEN_Enabled << I2S_CONFIG_RXEN_RXEN_Pos) &
+      I2S_CONFIG_RXEN_RXEN_Msk;
+  i2s_->CONFIG.TXEN =
+      (I2S_CONFIG_TXEN_TXEN_Disabled << I2S_CONFIG_TXEN_TXEN_Pos) &
+      I2S_CONFIG_TXEN_TXEN_Msk;
+  i2s_->CONFIG.MCKEN =
+      ((config_.enableMasterClock ? I2S_CONFIG_MCKEN_MCKEN_Enabled
+                                  : I2S_CONFIG_MCKEN_MCKEN_Disabled)
+       << I2S_CONFIG_MCKEN_MCKEN_Pos) &
+      I2S_CONFIG_MCKEN_MCKEN_Msk;
+  i2s_->CONFIG.MCKFREQ = config_.mckFreq;
+  i2s_->CONFIG.RATIO =
+      (config_.ratio << I2S_CONFIG_RATIO_RATIO_Pos) & I2S_CONFIG_RATIO_RATIO_Msk;
+  i2s_->CONFIG.SWIDTH =
+      (config_.sampleWidth << I2S_CONFIG_SWIDTH_SWIDTH_Pos) &
+      I2S_CONFIG_SWIDTH_SWIDTH_Msk;
+  i2s_->CONFIG.ALIGN =
+      (config_.align << I2S_CONFIG_ALIGN_ALIGN_Pos) & I2S_CONFIG_ALIGN_ALIGN_Msk;
+  i2s_->CONFIG.FORMAT =
+      (config_.format << I2S_CONFIG_FORMAT_FORMAT_Pos) & I2S_CONFIG_FORMAT_FORMAT_Msk;
+  i2s_->CONFIG.CHANNELS =
+      (config_.channels << I2S_CONFIG_CHANNELS_CHANNELS_Pos) &
+      I2S_CONFIG_CHANNELS_CHANNELS_Msk;
+
+  i2s_->RXTXD.MAXCNT = (wordCount_ << I2S_RXTXD_MAXCNT_MAXCNT_Pos) &
+                       I2S_RXTXD_MAXCNT_MAXCNT_Msk;
+  i2s_->INTENCLR = I2S_INTENCLR_RXPTRUPD_Msk | I2S_INTENCLR_STOPPED_Msk;
+  clearEvents();
+  armBuffer(0U);
+
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Enabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  ensureI2sIrqConnected(config_.irqPriority);
+
+  nextBufferIndex_ = 1U;
+  configured_ = true;
+  running_ = false;
+  restartPending_ = false;
+  rxPtrUpdCount_ = 0U;
+  stoppedCount_ = 0U;
+  restartCount_ = 0U;
+  manualStopCount_ = 0U;
+  return true;
+}
+
+void I2sRx::end() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  i2s_->INTENCLR = I2S_INTENCLR_RXPTRUPD_Msk | I2S_INTENCLR_STOPPED_Msk;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  waitForNonZero(&i2s_->EVENTS_STOPPED, 300000UL);
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+  i2s_->PSEL.MCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.LRCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDIN = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDOUT = PSEL_DISCONNECTED;
+  if (g_activeI2sRx == this) {
+    g_activeI2sRx = nullptr;
+  }
+  configured_ = false;
+  running_ = false;
+  restartPending_ = false;
+}
+
+bool I2sRx::start() {
+  if (!configured_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  clearEvents();
+  nextBufferIndex_ = 1U;
+  armBuffer(0U);
+  i2s_->INTENSET = I2S_INTENSET_RXPTRUPD_Msk | I2S_INTENSET_STOPPED_Msk;
+  running_ = true;
+  restartPending_ = false;
+  i2s_->TASKS_START = I2S_TASKS_START_TASKS_START_Trigger;
+  return true;
+}
+
+bool I2sRx::stop() {
+  if (!configured_ || !running_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  ++manualStopCount_;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  return true;
+}
+
+void I2sRx::service() {
+  if (restartPending_ && config_.autoRestart) {
+    restartPending_ = false;
+    ++restartCount_;
+    (void)start();
+  }
+}
+
+void I2sRx::onIrq() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  if (i2s_->EVENTS_RXPTRUPD != 0U) {
+    i2s_->EVENTS_RXPTRUPD = 0U;
+    const uint8_t queuedIndex = nextBufferIndex_;
+    armBuffer(queuedIndex);
+    nextBufferIndex_ ^= 1U;
+    if (receiveCallback_ != nullptr) {
+      receiveCallback_(buffers_[nextBufferIndex_], wordCount_, receiveContext_);
+    }
+    ++rxPtrUpdCount_;
+  }
+
+  if (i2s_->EVENTS_STOPPED != 0U) {
+    i2s_->EVENTS_STOPPED = 0U;
+    running_ = false;
+    restartPending_ = true;
+    ++stoppedCount_;
+  }
+}
+
+bool I2sRx::makeActive() {
+  if (!configured_) {
+    return false;
+  }
+  g_activeI2sDuplex = nullptr;
+  g_activeI2sTx = nullptr;
+  g_i2sRawHandler = nullptr;
+  g_activeI2sRx = this;
+  return true;
+}
+
+void I2sRx::irqHandler() {
+  if (g_activeI2sRx != nullptr) {
+    g_activeI2sRx->onIrq();
+  }
+}
+
+bool I2sRx::configured() const { return configured_; }
+bool I2sRx::running() const { return running_; }
+bool I2sRx::restartPending() const { return restartPending_; }
+uint32_t I2sRx::rxPtrUpdCount() const { return rxPtrUpdCount_; }
+uint32_t I2sRx::stoppedCount() const { return stoppedCount_; }
+uint32_t I2sRx::restartCount() const { return restartCount_; }
+uint32_t I2sRx::manualStopCount() const { return manualStopCount_; }
+
+void I2sRx::clearEvents() {
+  i2s_->EVENTS_RXPTRUPD = 0U;
+  i2s_->EVENTS_STOPPED = 0U;
+}
+
+void I2sRx::armBuffer(uint8_t bufferIndex) {
+  const uint8_t index = bufferIndex & 1U;
+  i2s_->RXD.PTR =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(buffers_[index])) &
+      I2S_RXD_PTR_PTR_Msk;
+}
+
+I2sDuplex::I2sDuplex(uint32_t base)
+    : i2s_(reinterpret_cast<NRF_I2S_Type*>(static_cast<uintptr_t>(base))),
+      config_(),
+      txBuffers_{nullptr, nullptr},
+      rxBuffers_{nullptr, nullptr},
+      wordCount_(0U),
+      txRefillCallback_(nullptr),
+      txRefillContext_(nullptr),
+      rxReceiveCallback_(nullptr),
+      rxReceiveContext_(nullptr),
+      nextTxBufferIndex_(1U),
+      nextRxBufferIndex_(1U),
+      configured_(false),
+      running_(false),
+      restartPending_(false),
+      txPtrUpdCount_(0U),
+      rxPtrUpdCount_(0U),
+      stoppedCount_(0U),
+      restartCount_(0U),
+      manualStopCount_(0U) {}
+
+bool I2sDuplex::setTxBuffers(uint32_t* buffer0,
+                             uint32_t* buffer1,
+                             uint32_t wordCount) {
+  if (buffer0 == nullptr || buffer1 == nullptr || wordCount == 0U) {
+    return false;
+  }
+  if ((reinterpret_cast<uintptr_t>(buffer0) & 0x3U) != 0U ||
+      (reinterpret_cast<uintptr_t>(buffer1) & 0x3U) != 0U) {
+    return false;
+  }
+  if (wordCount >
+      (I2S_RXTXD_MAXCNT_MAXCNT_Msk >> I2S_RXTXD_MAXCNT_MAXCNT_Pos)) {
+    return false;
+  }
+
+  txBuffers_[0] = buffer0;
+  txBuffers_[1] = buffer1;
+  wordCount_ = wordCount;
+  return true;
+}
+
+bool I2sDuplex::setRxBuffers(uint32_t* buffer0,
+                             uint32_t* buffer1,
+                             uint32_t wordCount) {
+  if (buffer0 == nullptr || buffer1 == nullptr || wordCount == 0U) {
+    return false;
+  }
+  if ((reinterpret_cast<uintptr_t>(buffer0) & 0x3U) != 0U ||
+      (reinterpret_cast<uintptr_t>(buffer1) & 0x3U) != 0U) {
+    return false;
+  }
+  if (wordCount >
+      (I2S_RXTXD_MAXCNT_MAXCNT_Msk >> I2S_RXTXD_MAXCNT_MAXCNT_Pos)) {
+    return false;
+  }
+  if (wordCount_ != 0U && wordCount_ != wordCount) {
+    return false;
+  }
+
+  rxBuffers_[0] = buffer0;
+  rxBuffers_[1] = buffer1;
+  wordCount_ = wordCount;
+  return true;
+}
+
+void I2sDuplex::setTxRefillCallback(TxRefillCallback callback, void* context) {
+  txRefillCallback_ = callback;
+  txRefillContext_ = context;
+}
+
+void I2sDuplex::setRxReceiveCallback(RxReceiveCallback callback, void* context) {
+  rxReceiveCallback_ = callback;
+  rxReceiveContext_ = context;
+}
+
+bool I2sDuplex::begin(const I2sDuplexConfig& config,
+                      uint32_t* txBuffer0,
+                      uint32_t* txBuffer1,
+                      uint32_t* rxBuffer0,
+                      uint32_t* rxBuffer1,
+                      uint32_t wordCount) {
+  if (i2s_ == nullptr ||
+      !setTxBuffers(txBuffer0, txBuffer1, wordCount) ||
+      !setRxBuffers(rxBuffer0, rxBuffer1, wordCount)) {
+    return false;
+  }
+  if (!isConnected(config.mck) || !isConnected(config.sck) ||
+      !isConnected(config.lrck) || !isConnected(config.sdin) ||
+      !isConnected(config.sdout)) {
+    return false;
+  }
+  if (!Gpio::configure(config.mck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.lrck, GpioDirection::kOutput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sdin, GpioDirection::kInput, GpioPull::kDisabled) ||
+      !Gpio::configure(config.sdout, GpioDirection::kOutput, GpioPull::kDisabled)) {
+    return false;
+  }
+
+  config_ = config;
+
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  i2s_->PSEL.MCK = make_psel(config_.mck.port, config_.mck.pin);
+  i2s_->PSEL.SCK = make_psel(config_.sck.port, config_.sck.pin);
+  i2s_->PSEL.LRCK = make_psel(config_.lrck.port, config_.lrck.pin);
+  i2s_->PSEL.SDIN = make_psel(config_.sdin.port, config_.sdin.pin);
+  i2s_->PSEL.SDOUT = make_psel(config_.sdout.port, config_.sdout.pin);
+
+  i2s_->CONFIG.MODE = (I2S_CONFIG_MODE_MODE_Master << I2S_CONFIG_MODE_MODE_Pos) &
+                      I2S_CONFIG_MODE_MODE_Msk;
+  i2s_->CONFIG.RXEN =
+      (I2S_CONFIG_RXEN_RXEN_Enabled << I2S_CONFIG_RXEN_RXEN_Pos) &
+      I2S_CONFIG_RXEN_RXEN_Msk;
+  i2s_->CONFIG.TXEN =
+      (I2S_CONFIG_TXEN_TXEN_Enabled << I2S_CONFIG_TXEN_TXEN_Pos) &
+      I2S_CONFIG_TXEN_TXEN_Msk;
+  i2s_->CONFIG.MCKEN =
+      ((config_.enableMasterClock ? I2S_CONFIG_MCKEN_MCKEN_Enabled
+                                  : I2S_CONFIG_MCKEN_MCKEN_Disabled)
+       << I2S_CONFIG_MCKEN_MCKEN_Pos) &
+      I2S_CONFIG_MCKEN_MCKEN_Msk;
+  i2s_->CONFIG.MCKFREQ = config_.mckFreq;
+  i2s_->CONFIG.RATIO =
+      (config_.ratio << I2S_CONFIG_RATIO_RATIO_Pos) & I2S_CONFIG_RATIO_RATIO_Msk;
+  i2s_->CONFIG.SWIDTH =
+      (config_.sampleWidth << I2S_CONFIG_SWIDTH_SWIDTH_Pos) &
+      I2S_CONFIG_SWIDTH_SWIDTH_Msk;
+  i2s_->CONFIG.ALIGN =
+      (config_.align << I2S_CONFIG_ALIGN_ALIGN_Pos) & I2S_CONFIG_ALIGN_ALIGN_Msk;
+  i2s_->CONFIG.FORMAT =
+      (config_.format << I2S_CONFIG_FORMAT_FORMAT_Pos) & I2S_CONFIG_FORMAT_FORMAT_Msk;
+  i2s_->CONFIG.CHANNELS =
+      (config_.channels << I2S_CONFIG_CHANNELS_CHANNELS_Pos) &
+      I2S_CONFIG_CHANNELS_CHANNELS_Msk;
+
+  i2s_->RXTXD.MAXCNT = (wordCount_ << I2S_RXTXD_MAXCNT_MAXCNT_Pos) &
+                       I2S_RXTXD_MAXCNT_MAXCNT_Msk;
+  i2s_->INTENCLR = I2S_INTENCLR_TXPTRUPD_Msk | I2S_INTENCLR_RXPTRUPD_Msk |
+                   I2S_INTENCLR_STOPPED_Msk;
+  clearEvents();
+  armTxBuffer(0U);
+  armRxBuffer(0U);
+
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Enabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+
+  ensureI2sIrqConnected(config_.irqPriority);
+
+  nextTxBufferIndex_ = 1U;
+  nextRxBufferIndex_ = 1U;
+  configured_ = true;
+  running_ = false;
+  restartPending_ = false;
+  txPtrUpdCount_ = 0U;
+  rxPtrUpdCount_ = 0U;
+  stoppedCount_ = 0U;
+  restartCount_ = 0U;
+  manualStopCount_ = 0U;
+  return true;
+}
+
+void I2sDuplex::end() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  i2s_->INTENCLR = I2S_INTENCLR_TXPTRUPD_Msk | I2S_INTENCLR_RXPTRUPD_Msk |
+                   I2S_INTENCLR_STOPPED_Msk;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  waitForNonZero(&i2s_->EVENTS_STOPPED, 300000UL);
+  i2s_->ENABLE = (I2S_ENABLE_ENABLE_Disabled << I2S_ENABLE_ENABLE_Pos) &
+                 I2S_ENABLE_ENABLE_Msk;
+  i2s_->PSEL.MCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.LRCK = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDIN = PSEL_DISCONNECTED;
+  i2s_->PSEL.SDOUT = PSEL_DISCONNECTED;
+  if (g_activeI2sDuplex == this) {
+    g_activeI2sDuplex = nullptr;
+  }
+  configured_ = false;
+  running_ = false;
+  restartPending_ = false;
+}
+
+bool I2sDuplex::start() {
+  if (!configured_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  clearEvents();
+  nextTxBufferIndex_ = 1U;
+  nextRxBufferIndex_ = 1U;
+  armTxBuffer(0U);
+  armRxBuffer(0U);
+  i2s_->INTENSET = I2S_INTENSET_TXPTRUPD_Msk | I2S_INTENSET_RXPTRUPD_Msk |
+                   I2S_INTENSET_STOPPED_Msk;
+  running_ = true;
+  restartPending_ = false;
+  i2s_->TASKS_START = I2S_TASKS_START_TASKS_START_Trigger;
+  return true;
+}
+
+bool I2sDuplex::stop() {
+  if (!configured_ || !running_ || i2s_ == nullptr) {
+    return false;
+  }
+
+  ++manualStopCount_;
+  i2s_->TASKS_STOP = I2S_TASKS_STOP_TASKS_STOP_Trigger;
+  return true;
+}
+
+void I2sDuplex::service() {
+  if (restartPending_ && config_.autoRestart) {
+    restartPending_ = false;
+    ++restartCount_;
+    (void)start();
+  }
+}
+
+void I2sDuplex::onIrq() {
+  if (!configured_ || i2s_ == nullptr) {
+    return;
+  }
+
+  if (i2s_->EVENTS_TXPTRUPD != 0U) {
+    i2s_->EVENTS_TXPTRUPD = 0U;
+    const uint8_t queuedIndex = nextTxBufferIndex_;
+    armTxBuffer(queuedIndex);
+    nextTxBufferIndex_ ^= 1U;
+    if (txRefillCallback_ != nullptr) {
+      txRefillCallback_(txBuffers_[nextTxBufferIndex_], wordCount_,
+                        txRefillContext_);
+    }
+    ++txPtrUpdCount_;
+  }
+
+  if (i2s_->EVENTS_RXPTRUPD != 0U) {
+    i2s_->EVENTS_RXPTRUPD = 0U;
+    const uint8_t queuedIndex = nextRxBufferIndex_;
+    armRxBuffer(queuedIndex);
+    nextRxBufferIndex_ ^= 1U;
+    if (rxReceiveCallback_ != nullptr) {
+      rxReceiveCallback_(rxBuffers_[nextRxBufferIndex_], wordCount_,
+                         rxReceiveContext_);
+    }
+    ++rxPtrUpdCount_;
+  }
+
+  if (i2s_->EVENTS_STOPPED != 0U) {
+    i2s_->EVENTS_STOPPED = 0U;
+    running_ = false;
+    restartPending_ = true;
+    ++stoppedCount_;
+  }
+}
+
+bool I2sDuplex::makeActive() {
+  if (!configured_) {
+    return false;
+  }
+  g_activeI2sTx = nullptr;
+  g_activeI2sRx = nullptr;
+  g_i2sRawHandler = nullptr;
+  g_activeI2sDuplex = this;
+  return true;
+}
+
+void I2sDuplex::irqHandler() {
+  if (g_activeI2sDuplex != nullptr) {
+    g_activeI2sDuplex->onIrq();
+  }
+}
+
+bool I2sDuplex::configured() const { return configured_; }
+bool I2sDuplex::running() const { return running_; }
+bool I2sDuplex::restartPending() const { return restartPending_; }
+uint32_t I2sDuplex::txPtrUpdCount() const { return txPtrUpdCount_; }
+uint32_t I2sDuplex::rxPtrUpdCount() const { return rxPtrUpdCount_; }
+uint32_t I2sDuplex::stoppedCount() const { return stoppedCount_; }
+uint32_t I2sDuplex::restartCount() const { return restartCount_; }
+uint32_t I2sDuplex::manualStopCount() const { return manualStopCount_; }
+
+bool connectI2s20Interrupt(void (*handler)(), uint8_t priority) {
+  if (handler == nullptr) {
+    return false;
+  }
+  g_activeI2sTx = nullptr;
+  g_activeI2sRx = nullptr;
+  g_activeI2sDuplex = nullptr;
+  g_i2sRawHandler = handler;
+  ensureI2sIrqConnected(priority);
+  return true;
+}
+
+void disconnectI2s20Interrupt() {
+  g_i2sRawHandler = nullptr;
+}
+
+void I2sDuplex::clearEvents() {
+  i2s_->EVENTS_TXPTRUPD = 0U;
+  i2s_->EVENTS_RXPTRUPD = 0U;
+  i2s_->EVENTS_STOPPED = 0U;
+}
+
+void I2sDuplex::armTxBuffer(uint8_t bufferIndex) {
+  const uint8_t index = bufferIndex & 1U;
+  i2s_->TXD.PTR =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(txBuffers_[index])) &
+      I2S_TXD_PTR_PTR_Msk;
+}
+
+void I2sDuplex::armRxBuffer(uint8_t bufferIndex) {
+  const uint8_t index = bufferIndex & 1U;
+  i2s_->RXD.PTR =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rxBuffers_[index])) &
+      I2S_RXD_PTR_PTR_Msk;
 }
 
 CracenRng::CracenRng(uint32_t controlBase, uint32_t coreBase)

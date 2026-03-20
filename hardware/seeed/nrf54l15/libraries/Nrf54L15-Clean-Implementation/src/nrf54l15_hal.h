@@ -86,6 +86,42 @@ class Spim {
   bool active_;
 };
 
+class Spis {
+ public:
+  explicit Spis(uint32_t base = nrf54l15::SPIS20_BASE);
+
+  bool begin(const Pin& sck,
+             const Pin& mosi,
+             const Pin& miso,
+             const Pin& csn,
+             SpiMode mode = SpiMode::kMode0,
+             bool lsbFirst = false,
+             uint8_t defaultChar = 0xFFU,
+             uint8_t overReadChar = 0xFFU,
+             bool autoAcquireAfterEnd = true);
+
+  bool acquire(uint32_t spinLimit = 2000000UL);
+  bool setBuffers(uint8_t* rx,
+                  size_t rxLen,
+                  const uint8_t* tx,
+                  size_t txLen,
+                  uint32_t spinLimit = 2000000UL);
+  bool releaseTransaction();
+
+  bool pollAcquired(bool clearEvent = true);
+  bool pollEnd(bool clearEvent = true);
+  size_t receivedBytes() const;
+  size_t transmittedBytes() const;
+  bool overflowed() const;
+  bool overread() const;
+  void clearStatus();
+  void end();
+
+ private:
+  NRF_SPIS_Type* spis_;
+  bool active_;
+ };
+
 enum class TwimFrequency : uint32_t {
   k100k = 100000UL,
   k250k = 250000UL,
@@ -549,6 +585,77 @@ class Lpcomp {
   bool active_;
 };
 
+enum class QdecSamplePeriod : uint8_t {
+  k128us = QDEC_SAMPLEPER_SAMPLEPER_128us,
+  k256us = QDEC_SAMPLEPER_SAMPLEPER_256us,
+  k512us = QDEC_SAMPLEPER_SAMPLEPER_512us,
+  k1024us = QDEC_SAMPLEPER_SAMPLEPER_1024us,
+  k2048us = QDEC_SAMPLEPER_SAMPLEPER_2048us,
+  k4096us = QDEC_SAMPLEPER_SAMPLEPER_4096us,
+  k8192us = QDEC_SAMPLEPER_SAMPLEPER_8192us,
+  k16384us = QDEC_SAMPLEPER_SAMPLEPER_16384us,
+  k32ms = QDEC_SAMPLEPER_SAMPLEPER_32ms,
+  k65ms = QDEC_SAMPLEPER_SAMPLEPER_65ms,
+  k131ms = QDEC_SAMPLEPER_SAMPLEPER_131ms,
+};
+
+enum class QdecReportPeriod : uint8_t {
+  k10Samples = QDEC_REPORTPER_REPORTPER_10Smpl,
+  k40Samples = QDEC_REPORTPER_REPORTPER_40Smpl,
+  k80Samples = QDEC_REPORTPER_REPORTPER_80Smpl,
+  k120Samples = QDEC_REPORTPER_REPORTPER_120Smpl,
+  k160Samples = QDEC_REPORTPER_REPORTPER_160Smpl,
+  k200Samples = QDEC_REPORTPER_REPORTPER_200Smpl,
+  k240Samples = QDEC_REPORTPER_REPORTPER_240Smpl,
+  k280Samples = QDEC_REPORTPER_REPORTPER_280Smpl,
+  k1Sample = QDEC_REPORTPER_REPORTPER_1Smpl,
+};
+
+enum class QdecLedPolarity : uint8_t {
+  kActiveLow = QDEC_LEDPOL_LEDPOL_ActiveLow,
+  kActiveHigh = QDEC_LEDPOL_LEDPOL_ActiveHigh,
+};
+
+enum class QdecInputPull : uint8_t {
+  kDisabled = GPIO_PIN_CNF_PULL_Disabled,
+  kPullDown = GPIO_PIN_CNF_PULL_Pulldown,
+  kPullUp = GPIO_PIN_CNF_PULL_Pullup,
+};
+
+class Qdec {
+ public:
+  explicit Qdec(uint32_t base = nrf54l15::QDEC20_BASE);
+
+  bool begin(const Pin& pinA,
+             const Pin& pinB,
+             QdecSamplePeriod samplePeriod = QdecSamplePeriod::k1024us,
+             QdecReportPeriod reportPeriod = QdecReportPeriod::k1Sample,
+             bool debounce = true,
+             QdecInputPull inputPull = QdecInputPull::kPullUp,
+             const Pin& ledPin = kPinDisconnected,
+             QdecLedPolarity ledPolarity = QdecLedPolarity::kActiveLow,
+             uint16_t ledPreUs = 16U);
+  void end();
+  void start();
+  void stop();
+
+  int32_t sampleValue() const;
+  int32_t accumulator() const;
+  int32_t readAndClearAccumulator();
+  uint32_t doubleTransitions() const;
+  uint32_t readAndClearDoubleTransitions();
+
+  bool pollSampleReady(bool clearEvent = true);
+  bool pollReportReady(bool clearEvent = true);
+  bool pollOverflow(bool clearEvent = true);
+  bool pollDoubleReady(bool clearEvent = true);
+  bool pollStopped(bool clearEvent = true);
+
+ private:
+  NRF_QDEC_Type* qdec_;
+  bool configured_;
+};
+
 enum class BoardAntennaPath : uint8_t {
   kCeramic = 0,
   kExternal = 1,
@@ -757,9 +864,233 @@ class Pdm {
                uint32_t spinLimit = 4000000UL);
 
  private:
-  uint32_t base_;
+ uint32_t base_;
+ bool configured_;
+ bool mono_;
+};
+
+bool connectI2s20Interrupt(void (*handler)(), uint8_t priority = 3U);
+void disconnectI2s20Interrupt();
+
+struct I2sTxConfig {
+  Pin mck = kPinDisconnected;
+  Pin sck = kPinDisconnected;
+  Pin lrck = kPinDisconnected;
+  Pin sdin = kPinDisconnected;
+  Pin sdout = kPinDisconnected;
+  uint32_t mckFreq = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV8;
+  uint32_t ratio = I2S_CONFIG_RATIO_RATIO_256X;
+  uint32_t sampleWidth = I2S_CONFIG_SWIDTH_SWIDTH_16Bit;
+  uint32_t align = I2S_CONFIG_ALIGN_ALIGN_Left;
+  uint32_t format = I2S_CONFIG_FORMAT_FORMAT_I2S;
+  uint32_t channels = I2S_CONFIG_CHANNELS_CHANNELS_Stereo;
+  uint8_t irqPriority = 3U;
+  bool enableMasterClock = true;
+  bool autoRestart = true;
+};
+
+class I2sTx {
+ public:
+  using RefillCallback = void (*)(uint32_t* buffer,
+                                  uint32_t wordCount,
+                                  void* context);
+
+  explicit I2sTx(uint32_t base = nrf54l15::I2S20_BASE);
+
+  bool begin(const I2sTxConfig& config,
+             uint32_t* buffer0,
+             uint32_t* buffer1,
+             uint32_t wordCount);
+  void end();
+
+  bool start();
+  bool stop();
+  void service();
+  void onIrq();
+
+  bool setBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount);
+  void setRefillCallback(RefillCallback callback, void* context = nullptr);
+  bool makeActive();
+  static void irqHandler();
+
+  bool configured() const;
+  bool running() const;
+  bool restartPending() const;
+  uint32_t txPtrUpdCount() const;
+  uint32_t stoppedCount() const;
+  uint32_t restartCount() const;
+  uint32_t manualStopCount() const;
+
+ private:
+  void clearEvents();
+  void armBuffer(uint8_t bufferIndex);
+
+  NRF_I2S_Type* i2s_;
+  I2sTxConfig config_;
+  uint32_t* buffers_[2];
+  uint32_t wordCount_;
+  RefillCallback refillCallback_;
+  void* refillContext_;
+  uint8_t nextBufferIndex_;
   bool configured_;
-  bool mono_;
+  bool running_;
+  bool restartPending_;
+  uint32_t txPtrUpdCount_;
+  uint32_t stoppedCount_;
+  uint32_t restartCount_;
+  uint32_t manualStopCount_;
+};
+
+struct I2sRxConfig {
+  Pin mck = kPinDisconnected;
+  Pin sck = kPinDisconnected;
+  Pin lrck = kPinDisconnected;
+  Pin sdin = kPinDisconnected;
+  Pin sdout = kPinDisconnected;
+  uint32_t mckFreq = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV8;
+  uint32_t ratio = I2S_CONFIG_RATIO_RATIO_256X;
+  uint32_t sampleWidth = I2S_CONFIG_SWIDTH_SWIDTH_16Bit;
+  uint32_t align = I2S_CONFIG_ALIGN_ALIGN_Left;
+  uint32_t format = I2S_CONFIG_FORMAT_FORMAT_I2S;
+  uint32_t channels = I2S_CONFIG_CHANNELS_CHANNELS_Stereo;
+  uint8_t irqPriority = 3U;
+  bool enableMasterClock = true;
+  bool autoRestart = true;
+};
+
+class I2sRx {
+ public:
+  using ReceiveCallback = void (*)(uint32_t* buffer,
+                                   uint32_t wordCount,
+                                   void* context);
+
+  explicit I2sRx(uint32_t base = nrf54l15::I2S20_BASE);
+
+  bool begin(const I2sRxConfig& config,
+             uint32_t* buffer0,
+             uint32_t* buffer1,
+             uint32_t wordCount);
+  void end();
+
+  bool start();
+  bool stop();
+  void service();
+  void onIrq();
+
+  bool setBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount);
+  void setReceiveCallback(ReceiveCallback callback, void* context = nullptr);
+  bool makeActive();
+  static void irqHandler();
+
+  bool configured() const;
+  bool running() const;
+  bool restartPending() const;
+  uint32_t rxPtrUpdCount() const;
+  uint32_t stoppedCount() const;
+  uint32_t restartCount() const;
+  uint32_t manualStopCount() const;
+
+ private:
+  void clearEvents();
+  void armBuffer(uint8_t bufferIndex);
+
+  NRF_I2S_Type* i2s_;
+  I2sRxConfig config_;
+  uint32_t* buffers_[2];
+  uint32_t wordCount_;
+  ReceiveCallback receiveCallback_;
+  void* receiveContext_;
+  uint8_t nextBufferIndex_;
+  bool configured_;
+  bool running_;
+  bool restartPending_;
+  uint32_t rxPtrUpdCount_;
+  uint32_t stoppedCount_;
+  uint32_t restartCount_;
+  uint32_t manualStopCount_;
+};
+
+struct I2sDuplexConfig {
+  Pin mck = kPinDisconnected;
+  Pin sck = kPinDisconnected;
+  Pin lrck = kPinDisconnected;
+  Pin sdin = kPinDisconnected;
+  Pin sdout = kPinDisconnected;
+  uint32_t mckFreq = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV8;
+  uint32_t ratio = I2S_CONFIG_RATIO_RATIO_256X;
+  uint32_t sampleWidth = I2S_CONFIG_SWIDTH_SWIDTH_16Bit;
+  uint32_t align = I2S_CONFIG_ALIGN_ALIGN_Left;
+  uint32_t format = I2S_CONFIG_FORMAT_FORMAT_I2S;
+  uint32_t channels = I2S_CONFIG_CHANNELS_CHANNELS_Stereo;
+  uint8_t irqPriority = 3U;
+  bool enableMasterClock = true;
+  bool autoRestart = true;
+};
+
+class I2sDuplex {
+ public:
+  using TxRefillCallback = void (*)(uint32_t* buffer,
+                                    uint32_t wordCount,
+                                    void* context);
+  using RxReceiveCallback = void (*)(uint32_t* buffer,
+                                     uint32_t wordCount,
+                                     void* context);
+
+  explicit I2sDuplex(uint32_t base = nrf54l15::I2S20_BASE);
+
+  bool begin(const I2sDuplexConfig& config,
+             uint32_t* txBuffer0,
+             uint32_t* txBuffer1,
+             uint32_t* rxBuffer0,
+             uint32_t* rxBuffer1,
+             uint32_t wordCount);
+  void end();
+
+  bool start();
+  bool stop();
+  void service();
+  void onIrq();
+
+  bool setTxBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount);
+  bool setRxBuffers(uint32_t* buffer0, uint32_t* buffer1, uint32_t wordCount);
+  void setTxRefillCallback(TxRefillCallback callback, void* context = nullptr);
+  void setRxReceiveCallback(RxReceiveCallback callback, void* context = nullptr);
+  bool makeActive();
+  static void irqHandler();
+
+  bool configured() const;
+  bool running() const;
+  bool restartPending() const;
+  uint32_t txPtrUpdCount() const;
+  uint32_t rxPtrUpdCount() const;
+  uint32_t stoppedCount() const;
+  uint32_t restartCount() const;
+  uint32_t manualStopCount() const;
+
+ private:
+  void clearEvents();
+  void armTxBuffer(uint8_t bufferIndex);
+  void armRxBuffer(uint8_t bufferIndex);
+
+  NRF_I2S_Type* i2s_;
+  I2sDuplexConfig config_;
+  uint32_t* txBuffers_[2];
+  uint32_t* rxBuffers_[2];
+  uint32_t wordCount_;
+  TxRefillCallback txRefillCallback_;
+  void* txRefillContext_;
+  RxReceiveCallback rxReceiveCallback_;
+  void* rxReceiveContext_;
+  uint8_t nextTxBufferIndex_;
+  uint8_t nextRxBufferIndex_;
+  bool configured_;
+  bool running_;
+  bool restartPending_;
+  uint32_t txPtrUpdCount_;
+  uint32_t rxPtrUpdCount_;
+  uint32_t stoppedCount_;
+  uint32_t restartCount_;
+  uint32_t manualStopCount_;
 };
 
 class CracenRng {
