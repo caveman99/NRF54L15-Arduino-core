@@ -253,8 +253,8 @@ extern const struct gpio_dt_spec g_pin_map[] = {
     GPIO_SPEC(gpio2, 10),  // D13
     GPIO_SPEC(gpio2, 9),   // D14
     GPIO_SPEC(gpio2, 6),   // D15
-    GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios),
-    GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios),
+    GPIO_SPEC(gpio2, 0),   // LED_BUILTIN (P2.00, active-low electrically)
+    GPIO_SPEC(gpio0, 0),   // PIN_BUTTON (P0.00, active-low electrically)
     GPIO_SPEC(gpio1, 9),   // PIN_SAMD11_RX (P1.09)
     GPIO_SPEC(gpio1, 8),   // PIN_SAMD11_TX (P1.08)
     GPIO_SPEC(gpio0, 1),   // IMU_MIC_EN / PIN_IMU_MIC_PWR (P0.01)

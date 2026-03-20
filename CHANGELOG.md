@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.14 - 2026-03-20
+
+- Fixed the Zephyr-core XIAO variant pin map so Arduino GPIO now uses raw
+  electrical semantics for the built-in LED and user button, matching the
+  clean core instead of inheriting Zephyr `GPIO_ACTIVE_LOW` inversion through
+  devicetree aliases.
+- This fixes the runtime parity bug where `BleBondPersistenceProbe` could
+  falsely think the user button was held at boot and clear the stored bond on
+  every restart; button and LED examples now see the expected active-low raw
+  levels (`PIN_BUTTON`: released=`HIGH`, pressed=`LOW`; `LED_BUILTIN`:
+  `HIGH`=off, `LOW`=on).
+- Re-verified the affected examples on the released Zephyr core:
+  `05.XIAO-Specific/button`, `BleBondPersistenceProbe`, and
+  `InterruptPwmApiProbe` compile cleanly after the fix.
+- Re-verified on hardware with forced `pyocd` upload/reset: after reboot
+  `BleBondPersistenceProbe` no longer prints `bond cleared (button held at
+  boot)`, and the host reconnects post-reboot with `Paired: yes`,
+  `Bonded: yes`, and `Connected: yes`.
+- The full compile sweep of the copied clean-derived example set still passes:
+  all 71 clean parity sketches currently bundled in the Zephyr core build on
+  `seeed:nrf54l15:xiao_nrf54l15`.
+
 ## 0.1.13 - 2026-03-20
 
 - Added the clean-core BLE pairing and bond-persistence parity tranche to the
