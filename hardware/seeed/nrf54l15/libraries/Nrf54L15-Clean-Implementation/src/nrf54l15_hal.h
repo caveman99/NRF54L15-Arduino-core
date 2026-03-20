@@ -1246,17 +1246,30 @@ class BleRadio {
 
   bool setTxPowerDbm(int8_t dbm);
   bool selectExternalAntenna(bool external);
+  bool loadAddressFromFicr(bool forceRandomStatic = true);
+  bool setDeviceAddress(const uint8_t address[6],
+                        BleAddressType type = BleAddressType::kRandomStatic);
+  bool getDeviceAddress(uint8_t addressOut[6],
+                        BleAddressType* typeOut = nullptr) const;
   bool setAdvertisingPduType(BleAdvPduType type);
+  bool setAdvertisingChannelSelectionAlgorithm2(bool enabled);
+  bool setAdvertisingData(const uint8_t* data, size_t len);
   bool setAdvertisingName(const char* name, bool includeFlags = true);
+  bool buildAdvertisingPacket();
   bool setScanResponseName(const char* name);
+  bool setScanResponseData(const uint8_t* data, size_t len);
+  bool buildScanResponsePacket();
   bool setGattDeviceName(const char* name);
   bool setGattBatteryLevel(uint8_t percent);
+  bool advertiseEvent(uint32_t interChannelDelayUs = 350U,
+                      uint32_t spinLimit = 600000UL);
   bool advertiseInteractEvent(BleAdvInteraction* interaction,
                               uint32_t interChannelDelayUs = 350U,
                               uint32_t requestListenSpinLimit = 250000UL,
                               uint32_t spinLimit = 700000UL);
 
  private:
+  bool ensureAdvertisingIdentity();
   bool ensureBatteryService();
   const char* effectiveLocalName() const;
 
@@ -1264,9 +1277,20 @@ class BleRadio {
   uint32_t ficrBase_;
   int8_t txPowerDbm_;
   BleAdvPduType pduType_;
+  BleAddressType addressType_;
   bool includeAdvertisingFlags_;
+  bool useChSel2_;
+  bool addressConfigured_;
+  bool advertisingIdentityDirty_;
+  bool customAdvertisingIdentity_;
   uint8_t batteryLevel_;
+  uint8_t advertisingIdentityId_;
   bool initialized_;
+  uint8_t address_[6];
+  uint8_t advertisingData_[31];
+  uint8_t scanResponseData_[31];
+  size_t advertisingDataLen_;
+  size_t scanResponseDataLen_;
   char advertisingName_[32];
   char scanResponseName_[32];
   char gattDeviceName_[32];

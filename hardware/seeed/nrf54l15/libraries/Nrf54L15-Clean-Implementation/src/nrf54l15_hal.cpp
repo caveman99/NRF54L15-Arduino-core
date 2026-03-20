@@ -10,6 +10,8 @@
 #include <string.h>
 #include <variant.h>
 
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/gap.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/irq.h>
@@ -414,6 +416,88 @@ void safeCopyString(const char* source, char* destination, size_t destinationSiz
 
   strncpy(destination, source, destinationSize - 1U);
   destination[destinationSize - 1U] = '\0';
+}
+
+constexpr size_t kBleMaxSerializedPayloadLen = 31U;
+constexpr size_t kBleMaxAdStructures = 16U;
+constexpr uint32_t kBleLegacyOneShotAdvInterval = 0x0020U;
+constexpr uint32_t kBleLegacyOneShotWindowMs = 40U;
+
+void extractBleLocalName(const uint8_t* payload,
+                         size_t payloadLen,
+                         char* destination,
+                         size_t destinationSize) {
+  if (destination == nullptr || destinationSize == 0U) {
+    return;
+  }
+
+  size_t offset = 0U;
+  while (payload != nullptr && offset < payloadLen) {
+    const uint8_t fieldLen = payload[offset++];
+    if (fieldLen == 0U) {
+      break;
+    }
+    if ((offset + fieldLen) > payloadLen) {
+      break;
+    }
+
+    const uint8_t fieldType = payload[offset++];
+    const size_t dataLen = static_cast<size_t>(fieldLen - 1U);
+    if ((fieldType == BT_DATA_NAME_COMPLETE ||
+         fieldType == BT_DATA_NAME_SHORTENED) &&
+        dataLen > 0U) {
+      const size_t copyLen =
+          (dataLen < (destinationSize - 1U)) ? dataLen : (destinationSize - 1U);
+      memcpy(destination, &payload[offset], copyLen);
+      destination[copyLen] = '\0';
+      return;
+    }
+    offset += dataLen;
+  }
+}
+
+bool parseBleAdvertisingPayload(const uint8_t* payload,
+                                size_t payloadLen,
+                                bt_data* entries,
+                                size_t maxEntries,
+                                size_t* entryCount) {
+  if (entries == nullptr || entryCount == nullptr) {
+    return false;
+  }
+  if (payloadLen > 0U && payload == nullptr) {
+    return false;
+  }
+
+  size_t count = 0U;
+  size_t offset = 0U;
+  while (offset < payloadLen) {
+    const uint8_t fieldLen = payload[offset++];
+    if (fieldLen == 0U) {
+      break;
+    }
+    if (fieldLen < 1U || (offset + fieldLen) > payloadLen || count >= maxEntries) {
+      return false;
+    }
+
+    entries[count].type = payload[offset++];
+    entries[count].data_len = static_cast<uint8_t>(fieldLen - 1U);
+    entries[count].data = &payload[offset];
+    offset += static_cast<size_t>(fieldLen - 1U);
+    ++count;
+  }
+
+  *entryCount = count;
+  return true;
+}
+
+BleAddressType bleAddressTypeFromZephyr(uint8_t type) {
+  return (type == BT_ADDR_LE_RANDOM) ? BleAddressType::kRandomStatic
+                                     : BleAddressType::kPublic;
+}
+
+uint8_t zephyrAddressTypeFromBle(BleAddressType type) {
+  return (type == BleAddressType::kRandomStatic) ? BT_ADDR_LE_RANDOM
+                                                 : BT_ADDR_LE_PUBLIC;
 }
 
 constexpr uint8_t kBleDataPduMaxPayload = 27U;
@@ -4686,9 +4770,20 @@ BleRadio::BleRadio(uint32_t radioBase, uint32_t ficrBase)
       ficrBase_(ficrBase),
       txPowerDbm_(-8),
       pduType_(BleAdvPduType::kAdvInd),
+      addressType_(BleAddressType::kRandomStatic),
       includeAdvertisingFlags_(true),
+      useChSel2_(false),
+      addressConfigured_(false),
+      advertisingIdentityDirty_(false),
+      customAdvertisingIdentity_(false),
       batteryLevel_(100U),
+      advertisingIdentityId_(BT_ID_DEFAULT),
       initialized_(false),
+      address_{0},
+      advertisingData_{0},
+      scanResponseData_{0},
+      advertisingDataLen_(0U),
+      scanResponseDataLen_(0U),
       advertisingName_{0},
       scanResponseName_{0},
       gattDeviceName_{0},
@@ -4717,6 +4812,7 @@ void BleRadio::end() {
   }
 
   BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
   BLE.end();
   initialized_ = false;
   batteryServiceAdded_ = false;
@@ -4732,22 +4828,223 @@ bool BleRadio::selectExternalAntenna(bool external) {
       external ? BoardAntennaPath::kExternal : BoardAntennaPath::kCeramic);
 }
 
-bool BleRadio::setAdvertisingPduType(BleAdvPduType type) {
-  pduType_ = type;
+bool BleRadio::loadAddressFromFicr(bool forceRandomStatic) {
+  if (!initialized_ && !begin(txPowerDbm_)) {
+    return false;
+  }
+
+  bt_addr_le_t address;
+  size_t count = 1U;
+  memset(&address, 0, sizeof(address));
+  bt_id_get(&address, &count);
+  if (count == 0U) {
+    return false;
+  }
+
+  BleAddressType type = bleAddressTypeFromZephyr(address.type);
+  if (forceRandomStatic) {
+    type = BleAddressType::kRandomStatic;
+  }
+  return setDeviceAddress(address.a.val, type);
+}
+
+bool BleRadio::setDeviceAddress(const uint8_t address[6], BleAddressType type) {
+  if (address == nullptr) {
+    return false;
+  }
+
+  memcpy(address_, address, sizeof(address_));
+  if (type == BleAddressType::kRandomStatic) {
+    address_[5] = static_cast<uint8_t>((address_[5] & 0x3FU) | 0xC0U);
+  }
+  addressType_ = type;
+  addressConfigured_ = true;
+  advertisingIdentityDirty_ = true;
+  return buildAdvertisingPacket() && buildScanResponsePacket();
+}
+
+bool BleRadio::getDeviceAddress(uint8_t addressOut[6], BleAddressType* typeOut) const {
+  if (addressOut == nullptr) {
+    return false;
+  }
+
+  if (addressConfigured_) {
+    memcpy(addressOut, address_, sizeof(address_));
+    if (typeOut != nullptr) {
+      *typeOut = addressType_;
+    }
+    return true;
+  }
+
+  if (!initialized_) {
+    return false;
+  }
+
+  bt_addr_le_t address;
+  size_t count = 1U;
+  memset(&address, 0, sizeof(address));
+  bt_id_get(&address, &count);
+  if (count == 0U) {
+    return false;
+  }
+
+  memcpy(addressOut, address.a.val, sizeof(address.a.val));
+  if (typeOut != nullptr) {
+    *typeOut = bleAddressTypeFromZephyr(address.type);
+  }
   return true;
 }
 
+bool BleRadio::setAdvertisingPduType(BleAdvPduType type) {
+  const uint8_t raw = static_cast<uint8_t>(type);
+  if (raw > 0x0FU) {
+    return false;
+  }
+  pduType_ = type;
+  return buildAdvertisingPacket();
+}
+
+bool BleRadio::setAdvertisingChannelSelectionAlgorithm2(bool enabled) {
+  useChSel2_ = enabled;
+  return buildAdvertisingPacket();
+}
+
+bool BleRadio::setAdvertisingData(const uint8_t* data, size_t len) {
+  if (len > sizeof(advertisingData_)) {
+    return false;
+  }
+  if (len > 0U && data == nullptr) {
+    return false;
+  }
+
+  memset(advertisingData_, 0, sizeof(advertisingData_));
+  advertisingName_[0] = '\0';
+  if (len > 0U) {
+    memcpy(advertisingData_, data, len);
+    extractBleLocalName(advertisingData_, len, advertisingName_,
+                        sizeof(advertisingName_));
+  }
+  advertisingDataLen_ = len;
+  return buildAdvertisingPacket();
+}
+
 bool BleRadio::setAdvertisingName(const char* name, bool includeFlags) {
+  if (name == nullptr) {
+    return false;
+  }
+
   includeAdvertisingFlags_ = includeFlags;
   safeCopyString(name, advertisingName_, sizeof(advertisingName_));
+  uint8_t payload[kBleMaxSerializedPayloadLen] = {0};
+  size_t used = 0U;
+
+  if (includeFlags) {
+    payload[used++] = 2U;
+    payload[used++] = BT_DATA_FLAGS;
+    payload[used++] = BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR;
+  }
+
+  const size_t nameLen = strlen(name);
+  if (used >= sizeof(payload) || (sizeof(payload) - used) < 2U) {
+    return false;
+  }
+
+  size_t copyLen = nameLen;
+  uint8_t adType = BT_DATA_NAME_COMPLETE;
+  if ((copyLen + 2U) > (sizeof(payload) - used)) {
+    copyLen = sizeof(payload) - used - 2U;
+    adType = BT_DATA_NAME_SHORTENED;
+  }
+
+  payload[used++] = static_cast<uint8_t>(copyLen + 1U);
+  payload[used++] = adType;
+  if (copyLen > 0U) {
+    memcpy(&payload[used], name, copyLen);
+    used += copyLen;
+  }
+
+  const bool ok = setAdvertisingData(payload, used);
+  if (ok && gattDeviceName_[0] == '\0') {
+    (void)setGattDeviceName(name);
+  }
   if (initialized_ && advertisingName_[0] != '\0') {
-    return BLE.setLocalName(advertisingName_);
+    return ok && BLE.setLocalName(advertisingName_);
+  }
+  return ok;
+}
+
+bool BleRadio::buildAdvertisingPacket() {
+  if (advertisingDataLen_ > sizeof(advertisingData_)) {
+    return false;
+  }
+  if (advertisingDataLen_ > 0U) {
+    bt_data entries[kBleMaxAdStructures];
+    size_t entryCount = 0U;
+    if (!parseBleAdvertisingPayload(advertisingData_, advertisingDataLen_, entries,
+                                    kBleMaxAdStructures, &entryCount)) {
+      return false;
+    }
   }
   return true;
 }
 
 bool BleRadio::setScanResponseName(const char* name) {
+  if (name == nullptr) {
+    return false;
+  }
+
   safeCopyString(name, scanResponseName_, sizeof(scanResponseName_));
+  uint8_t payload[kBleMaxSerializedPayloadLen] = {0};
+  const size_t nameLen = strlen(name);
+  size_t used = 0U;
+  size_t copyLen = nameLen;
+  uint8_t adType = BT_DATA_NAME_COMPLETE;
+  if ((copyLen + 2U) > sizeof(payload)) {
+    copyLen = sizeof(payload) - 2U;
+    adType = BT_DATA_NAME_SHORTENED;
+  }
+
+  payload[used++] = static_cast<uint8_t>(copyLen + 1U);
+  payload[used++] = adType;
+  if (copyLen > 0U) {
+    memcpy(&payload[used], name, copyLen);
+    used += copyLen;
+  }
+
+  return setScanResponseData(payload, used);
+}
+
+bool BleRadio::setScanResponseData(const uint8_t* data, size_t len) {
+  if (len > sizeof(scanResponseData_)) {
+    return false;
+  }
+  if (len > 0U && data == nullptr) {
+    return false;
+  }
+
+  memset(scanResponseData_, 0, sizeof(scanResponseData_));
+  scanResponseName_[0] = '\0';
+  if (len > 0U) {
+    memcpy(scanResponseData_, data, len);
+    extractBleLocalName(scanResponseData_, len, scanResponseName_,
+                        sizeof(scanResponseName_));
+  }
+  scanResponseDataLen_ = len;
+  return buildScanResponsePacket();
+}
+
+bool BleRadio::buildScanResponsePacket() {
+  if (scanResponseDataLen_ > sizeof(scanResponseData_)) {
+    return false;
+  }
+  if (scanResponseDataLen_ > 0U) {
+    bt_data entries[kBleMaxAdStructures];
+    size_t entryCount = 0U;
+    if (!parseBleAdvertisingPayload(scanResponseData_, scanResponseDataLen_, entries,
+                                    kBleMaxAdStructures, &entryCount)) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -4775,6 +5072,118 @@ bool BleRadio::setGattBatteryLevel(uint8_t percent) {
   }
   const uint8_t value = batteryLevel_;
   return characteristic->writeValue(&value, sizeof(value));
+}
+
+bool BleRadio::ensureAdvertisingIdentity() {
+  if (!initialized_ && !begin(txPowerDbm_)) {
+    return false;
+  }
+  if (!addressConfigured_) {
+    advertisingIdentityId_ = BT_ID_DEFAULT;
+    advertisingIdentityDirty_ = false;
+    return true;
+  }
+  if (!advertisingIdentityDirty_) {
+    return true;
+  }
+
+  bt_addr_le_t address;
+  memset(&address, 0, sizeof(address));
+  address.type = zephyrAddressTypeFromBle(addressType_);
+  memcpy(address.a.val, address_, sizeof(address_));
+
+  int id = 0;
+  if (customAdvertisingIdentity_) {
+    id = bt_id_reset(advertisingIdentityId_, &address, nullptr);
+  } else {
+    id = bt_id_create(&address, nullptr);
+  }
+  if (id < 0) {
+    return false;
+  }
+
+  advertisingIdentityId_ = static_cast<uint8_t>(id);
+  customAdvertisingIdentity_ = true;
+  advertisingIdentityDirty_ = false;
+  return true;
+}
+
+bool BleRadio::advertiseEvent(uint32_t interChannelDelayUs, uint32_t spinLimit) {
+  (void)interChannelDelayUs;
+  (void)spinLimit;
+  (void)useChSel2_;
+  (void)radioBase_;
+  (void)ficrBase_;
+
+  if (!initialized_ && !begin(txPowerDbm_)) {
+    return false;
+  }
+  if (!buildAdvertisingPacket() || !buildScanResponsePacket() ||
+      !ensureAdvertisingIdentity()) {
+    return false;
+  }
+
+  bt_data ad[kBleMaxAdStructures];
+  size_t adCount = 0U;
+  if (!parseBleAdvertisingPayload(advertisingData_, advertisingDataLen_, ad,
+                                  kBleMaxAdStructures, &adCount)) {
+    return false;
+  }
+
+  bt_data sd[kBleMaxAdStructures];
+  size_t sdCount = 0U;
+  if (!parseBleAdvertisingPayload(scanResponseData_, scanResponseDataLen_, sd,
+                                  kBleMaxAdStructures, &sdCount)) {
+    return false;
+  }
+
+  const char* localName = effectiveLocalName();
+  if (localName != nullptr && localName[0] != '\0') {
+    (void)BLE.setLocalName(localName);
+  }
+
+  BLE.stopAdvertising();
+  (void)bt_le_adv_stop();
+
+  uint32_t options = 0U;
+  switch (pduType_) {
+    case BleAdvPduType::kAdvInd:
+      options = BT_LE_ADV_OPT_CONN;
+      break;
+    case BleAdvPduType::kAdvNonConnInd:
+      options = 0U;
+      sdCount = 0U;
+      break;
+    case BleAdvPduType::kAdvScanInd:
+      options = BT_LE_ADV_OPT_SCANNABLE;
+      break;
+    default:
+      return false;
+  }
+  if (advertisingIdentityId_ != BT_ID_DEFAULT) {
+    options |= BT_LE_ADV_OPT_USE_IDENTITY;
+  }
+
+  bt_le_adv_param advParam = BT_LE_ADV_PARAM_INIT(
+      options, kBleLegacyOneShotAdvInterval, kBleLegacyOneShotAdvInterval, nullptr);
+  advParam.options = options;
+  advParam.id = advertisingIdentityId_;
+
+  int err = bt_le_adv_start(&advParam, (adCount > 0U) ? ad : nullptr, adCount,
+                            (sdCount > 0U) ? sd : nullptr, sdCount);
+  if (err == -EALREADY) {
+    (void)bt_le_adv_stop();
+    delay(1);
+    err = bt_le_adv_start(&advParam, (adCount > 0U) ? ad : nullptr, adCount,
+                          (sdCount > 0U) ? sd : nullptr, sdCount);
+  }
+  if (err != 0) {
+    return false;
+  }
+
+  delay(kBleLegacyOneShotWindowMs);
+  (void)bt_le_adv_stop();
+  return true;
 }
 
 bool BleRadio::advertiseInteractEvent(BleAdvInteraction* interaction,

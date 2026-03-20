@@ -247,7 +247,7 @@ python3 tools/get_toolchain.py
 - Additional generic core examples: `examples/01.Basics`, `examples/02.Analog`, `examples/03.Communication`
 - Library examples:
   - Bluetooth: `libraries/Bluetooth/examples/BLEAdvertise`, `libraries/Bluetooth/examples/BLEScan`
-  - Nrf54L15-Clean-Implementation: `libraries/Nrf54L15-Clean-Implementation/examples/Board`, `libraries/Nrf54L15-Clean-Implementation/examples/Diagnostics`, `libraries/Nrf54L15-Clean-Implementation/examples/LowPower`, `libraries/Nrf54L15-Clean-Implementation/examples/Peripherals`
+  - Nrf54L15-Clean-Implementation: `libraries/Nrf54L15-Clean-Implementation/examples/Board`, `libraries/Nrf54L15-Clean-Implementation/examples/BLE`, `libraries/Nrf54L15-Clean-Implementation/examples/Diagnostics`, `libraries/Nrf54L15-Clean-Implementation/examples/LowPower`, `libraries/Nrf54L15-Clean-Implementation/examples/Peripherals`
   - Wire: `libraries/Wire/examples/I2CScanner`
   - Zigbee: `libraries/Zigbee/examples/ZigbeeScan`, `libraries/Zigbee/examples/ZigbeeRadioConfig`
   - HPFMSPI: `libraries/HPFMSPI/examples/HPFMSPIInfo`
@@ -258,7 +258,8 @@ Notes:
 - `Zigbee` library currently wraps Zephyr IEEE 802.15.4 management APIs (scan/channel/PAN/address/TX power). Full OpenThread/Zigbee stack APIs are still outside this Arduino wrapper layer.
 - `Wire` now includes Arduino-style slave callbacks (`begin(address)`, `onReceive`, `onRequest`) via Zephyr I2C target API; runtime support depends on the active low-level I2C backend.
 - `HPF-mspi` workflow is experimental and controlled by `Tools -> HPF MSPI`.
-- `Nrf54L15-Clean-Implementation` now includes the clean-core board, low-power, diagnostics, and next peripherals parity tranches. Verified sketches in the current parity passes include `AarResolvePrivateAddress`, `CcmBlePacketTamperDetect`, `CcmBleSpecVector`, `CompThresholdMonitor`, `CracenRandomBytes`, `CracenSeedArduinoRandom`, `DppicHardwareBlink`, `EcbAesKnownVector`, `GrtcCompareAlarmTicker`, `GrtcUptimeClock`, `I2sDuplexWrapperInterrupt`, `I2sTxWrapperInterrupt`, `LpcompSystemOffWake`, `QdecRotaryReporter`, `RawI2sTxInterrupt`, `SaadcDifferentialProbe`, and `SpisTargetEcho`.
-- The current Zephyr-safe clean shims cover SPI/TWI/UART/ADC/timer/PWM/GPIOTE/PDM/I2S/QDEC/SPIS plus software-backed RNG/AAR/ECB/CCM, a pragmatic BLE advertising wrapper, and the `Grtc` compatibility layer used by the new peripheral examples.
+- `Nrf54L15-Clean-Implementation` now includes the clean-core board, BLE advertiser, low-power, diagnostics, and next peripherals parity tranches. Verified sketches in the current parity passes include `AarResolvePrivateAddress`, `BleAdvertiser`, `CcmBlePacketTamperDetect`, `CcmBleSpecVector`, `CompThresholdMonitor`, `CracenRandomBytes`, `CracenSeedArduinoRandom`, `DppicHardwareBlink`, `EcbAesKnownVector`, `GrtcCompareAlarmTicker`, `GrtcUptimeClock`, `I2sDuplexWrapperInterrupt`, `I2sTxWrapperInterrupt`, `LowPowerBleBeaconDutyCycle`, `LpcompSystemOffWake`, `QdecRotaryReporter`, `RawI2sTxInterrupt`, `SaadcDifferentialProbe`, and `SpisTargetEcho`.
+- The current Zephyr-safe clean shims cover SPI/TWI/UART/ADC/timer/PWM/GPIOTE/PDM/I2S/QDEC/SPIS plus software-backed RNG/AAR/ECB/CCM, raw advertiser-compatible BLE shims (custom static address, raw AD/scan-response payloads, one-shot legacy advertising), and the `Grtc` compatibility layer used by the new peripheral examples.
+- The packaged Zephyr base config now sets `CONFIG_BT_ID_MAX=2`, which is required for clean-core examples that assign a custom BLE advertiser address.
 - I2S wrapper and raw-register examples now route `I2S20_IRQn` through a Zephyr-owned shared IRQ connection, which fixes the earlier `Unhandled IRQn: 221` runtime failure on this core.
 - `DppicHardwareBlink` falls back to timer-driven software toggling on this Zephyr shim because the clean-core-style publish/subscribe register plumbing is not yet exposed through the compatibility layer.

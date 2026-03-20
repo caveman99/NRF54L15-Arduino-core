@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.9 - 2026-03-20
+
+- Added the next clean-core BLE advertiser parity tranche to the Seeed Zephyr
+  core, including `BleRadio` support for raw advertising payloads, scan
+  response payloads, custom static addresses, and one-shot legacy advertising
+  events that map onto Zephyr's BLE host stack.
+- Copied the clean-core BLE advertiser examples into the packaged Zephyr core:
+  `BleAdvertiser`, `BleAdvertiserProbe`,
+  `BleAdvertiserLowestPowerContinuous`, `BleAdvertiserRfSwitchDutyCycle`,
+  `BleAdvertiserHybridDutyCycle`, `BleAdvertiserBurstSystemOff`,
+  `BleAdvertiserPhoneBeacon15s`, and `LowPowerBleBeaconDutyCycle`.
+- Raised the packaged Zephyr Bluetooth identity limit to `CONFIG_BT_ID_MAX=2`,
+  which is required for clean-core-style custom advertiser addresses on this
+  core.
+- Verified the new BLE advertiser tranche on hardware with forced `pyocd`
+  upload/reset: `BleAdvertiser` now advertises as
+  `C0:DE:54:15:00:01 / XIAO-54-CLN`, and `LowPowerBleBeaconDutyCycle` boots,
+  reports `status=OK`, and is discoverable as `XIAO54-LP`.
+
 ## 0.1.8 - 2026-03-20
 
 - Added the next clean-core parity wrappers for SPIS, QDEC, and I2S plus the

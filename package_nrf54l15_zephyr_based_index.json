@@ -12,6 +12,30 @@
         {
           "name": "Seeed nRF54L15 (Zephyr-Based)",
           "architecture": "nrf54l15",
+          "version": "0.1.9",
+          "category": "Arduino",
+          "url": "https://github.com/lolren/NRF54L15-Arduino-core/releases/download/v0.1.9/nrf54l15-zephyr-based-0.1.9.tar.bz2",
+          "archiveFileName": "nrf54l15-zephyr-based-0.1.9.tar.bz2",
+          "checksum": "SHA-256:3cdc944864908154f2fa241e8fd9b41b93be3d8b22991afb32b19abaf08c8823",
+          "size": "524813",
+          "boards": [
+            {
+              "name": "XIAO nRF54L15 (Zephyr-Based - NO BLE)"
+            },
+            {
+              "name": "XIAO nRF54L15 Sense (Zephyr-Based)"
+            }
+          ],
+          "help": {
+            "online": "https://github.com/lolren/NRF54L15-Arduino-core"
+          },
+          "toolsDependencies": [],
+          "discoveryDependencies": [],
+          "monitorDependencies": []
+        },
+        {
+          "name": "Seeed nRF54L15 (Zephyr-Based)",
+          "architecture": "nrf54l15",
           "version": "0.1.8",
           "category": "Arduino",
           "url": "https://github.com/lolren/NRF54L15-Arduino-core/releases/download/v0.1.8/nrf54l15-zephyr-based-0.1.8.tar.bz2",
